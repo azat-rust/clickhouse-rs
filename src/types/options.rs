@@ -12,6 +12,9 @@ use crate::errors::{Error, Result, UrlError};
 use percent_encoding::percent_decode;
 use url::Url;
 
+#[cfg(feature = "tls-rustls")]
+use rustls::pki_types::pem::PemObject;
+
 const DEFAULT_MIN_CONNS: usize = 10;
 
 const DEFAULT_MAX_CONNS: usize = 20;
@@ -177,6 +180,44 @@ pub fn load_certificate(file: &str) -> Result<Certificate> {
     }
 }
 
+/// Private key for rustls.
+#[cfg(feature = "tls-rustls")]
+#[derive(Clone)]
+pub struct PrivateKey(Arc<rustls::pki_types::PrivateKeyDer<'static>>);
+#[cfg(feature = "tls-rustls")]
+impl PrivateKey {
+    pub fn from_pem(pem: &[u8]) -> Result<Self> {
+        let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(&mut pem.as_ref()).map_err(|_| UrlError::Invalid)?;
+        Ok(Self(Arc::new(key)))
+    }
+}
+#[cfg(feature = "tls-rustls")]
+impl From<PrivateKey> for rustls::pki_types::PrivateKeyDer<'static> {
+    fn from(value: PrivateKey) -> Self {
+        rustls::pki_types::PrivateKeyDer::clone_key(value.0.as_ref())
+    }
+}
+
+#[cfg(feature = "_tls")]
+impl fmt::Debug for PrivateKey {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "[Private Key]")
+    }
+}
+
+#[cfg(feature = "_tls")]
+impl PartialEq for PrivateKey {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "_tls")]
+pub fn load_private_key(file: &str) -> Result<PrivateKey> {
+    let data = fs::read(file)?;
+    PrivateKey::from_pem(&data)
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum SettingType {
     String(String),
@@ -302,6 +343,14 @@ pub struct Options {
     #[cfg(feature = "_tls")]
     pub(crate) ca_certificate: Option<Certificate>,
 
+    /// Certificate for authorization.
+    #[cfg(feature = "_tls")]
+    pub(crate) certificate_file: Option<Certificate>,
+
+    /// Private key for certificate.
+    #[cfg(feature = "_tls")]
+    pub(crate) private_key_file: Option<PrivateKey>,
+
     /// Query settings
     pub(crate) settings: HashMap<String, SettingValue>,
 
@@ -357,6 +406,10 @@ impl Default for Options {
             skip_verify: false,
             #[cfg(feature = "_tls")]
             ca_certificate: None,
+            #[cfg(feature = "_tls")]
+            certificate_file: None,
+            #[cfg(feature = "_tls")]
+            private_key_file: None,
             settings: HashMap::new(),
             alt_hosts: Vec::new(),
         }
@@ -511,6 +564,18 @@ impl Options {
         => ca_certificate: Option<Certificate>
     }
 
+    #[cfg(feature = "_tls")]
+    property! {
+        /// Certificate for authorization.
+        => certificate_file: Option<Certificate>
+    }
+
+    #[cfg(feature = "_tls")]
+    property! {
+        /// Private key for certificate.
+        => private_key_file: Option<PrivateKey>
+    }
+
     property! {
         /// Query settings
         => settings: HashMap<String, SettingValue>
@@ -604,6 +669,10 @@ where
             "skip_verify" => options.skip_verify = parse_param(key, value, bool::from_str)?,
             #[cfg(feature = "_tls")]
             "ca_certificate" => options.ca_certificate = Some(parse_param(key, value, load_certificate)?),
+            #[cfg(feature = "_tls")]
+            "certificate_file" => options.certificate_file = Some(parse_param(key, value, load_certificate)?),
+            #[cfg(feature = "_tls")]
+            "private_key_file" => options.private_key_file = Some(parse_param(key, value, load_private_key)?),
             "alt_hosts" => options.alt_hosts = parse_param(key, value, parse_hosts)?,
             _ => {
                 let value = SettingType::String(value.to_string());

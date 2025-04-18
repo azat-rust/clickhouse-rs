@@ -105,6 +105,11 @@ impl State {
     }
 
     #[cfg(feature = "_tls")]
+    fn tls_err(e: TlsError) -> Self {
+        State::Tls(TlsState::Fail(Some(ConnectionError::TlsError(e))))
+    }
+
+    #[cfg(feature = "_tls")]
     fn tls_host_err() -> Self {
         State::Tls(TlsState::Fail(Some(ConnectionError::TlsHostNotProvided)))
     }
@@ -261,11 +266,10 @@ impl ConnectingStream {
                 state: State::tls_host_err(),
             },
             Some(host) => {
-                let config = if options.skip_verify {
+                let builder = if options.skip_verify {
                     ClientConfig::builder()
                         .dangerous()
                         .with_custom_certificate_verifier(Arc::new(DummyTlsVerifier))
-                        .with_no_client_auth()
                 } else {
                     let mut cert_store = RootCertStore::empty();
                     cert_store.extend(
@@ -293,7 +297,21 @@ impl ConnectingStream {
                     }
                     ClientConfig::builder()
                         .with_root_certificates(cert_store)
-                        .with_no_client_auth()
+                };
+                let config = if let Some(certificate_file) = options.certificate_file.clone() {
+                    if let Some(private_key_file) = options.private_key_file.clone() {
+                        builder.with_client_auth_cert(certificate_file.into(), private_key_file.into())
+                    } else {
+                        Ok(builder.with_no_client_auth())
+                    }
+                } else {
+                    Ok(builder.with_no_client_auth())
+                };
+                let config = match config {
+                    Ok(config) => config,
+                    Err(err) => {
+                        return Self { state: State::tls_err(err) };
+                    },
                 };
                 Self {
                     state: State::tls_wait(Box::pin(async move {
