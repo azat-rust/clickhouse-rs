@@ -39,7 +39,7 @@ jobs:
           - tls-rustls
         options:
           - skip_verify=true
-          - certificate=/tmp/ca.pem
+          - ca_certificate=/tmp/ca.pem
     runs-on: ubuntu-latest
     env:
       # NOTE: not all tests "secure" aware, so let's define DATABASE_URL explicitly

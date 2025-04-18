@@ -231,7 +231,7 @@ impl ConnectingStream {
             Some(host) => {
                 let mut builder = TlsConnector::builder();
                 builder.danger_accept_invalid_certs(options.skip_verify);
-                if let Some(certificate) = options.certificate.clone() {
+                if let Some(certificate) = options.ca_certificate.clone() {
                     let native_cert = native_tls::Certificate::from(certificate);
                     builder.add_root_certificate(native_cert);
                 }
@@ -273,7 +273,7 @@ impl ConnectingStream {
                             .iter()
                             .cloned()
                     );
-                    if let Some(certificates) = options.certificate.clone() {
+                    if let Some(certificates) = options.ca_certificate.clone() {
                         for certificate in
                             Into::<Vec<rustls::pki_types::CertificateDer<'static>>>::into(
                                 certificates,

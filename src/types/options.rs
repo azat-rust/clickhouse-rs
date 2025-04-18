@@ -298,9 +298,9 @@ pub struct Options {
     #[cfg(feature = "_tls")]
     pub(crate) skip_verify: bool,
 
-    /// An X509 certificate.
+    /// CA certificate.
     #[cfg(feature = "_tls")]
-    pub(crate) certificate: Option<Certificate>,
+    pub(crate) ca_certificate: Option<Certificate>,
 
     /// Query settings
     pub(crate) settings: HashMap<String, SettingValue>,
@@ -326,7 +326,7 @@ impl fmt::Debug for Options {
             .field("connection_timeout", &self.connection_timeout)
             .field("settings", &self.settings)
             .field("alt_hosts", &self.alt_hosts)
-            .field("certificate", &self.certificate)
+            .field("ca_certificate", &self.ca_certificate)
             .finish()
     }
 }
@@ -356,7 +356,7 @@ impl Default for Options {
             #[cfg(feature = "_tls")]
             skip_verify: false,
             #[cfg(feature = "_tls")]
-            certificate: None,
+            ca_certificate: None,
             settings: HashMap::new(),
             alt_hosts: Vec::new(),
         }
@@ -507,8 +507,8 @@ impl Options {
 
     #[cfg(feature = "_tls")]
     property! {
-        /// An X509 certificate.
-        => certificate: Option<Certificate>
+        /// CA certificate.
+        => ca_certificate: Option<Certificate>
     }
 
     property! {
@@ -603,7 +603,7 @@ where
             #[cfg(feature = "_tls")]
             "skip_verify" => options.skip_verify = parse_param(key, value, bool::from_str)?,
             #[cfg(feature = "_tls")]
-            "certificate" => options.certificate = Some(parse_param(key, value, load_certificate)?),
+            "ca_certificate" => options.ca_certificate = Some(parse_param(key, value, load_certificate)?),
             "alt_hosts" => options.alt_hosts = parse_param(key, value, parse_hosts)?,
             _ => {
                 let value = SettingType::String(value.to_string());
