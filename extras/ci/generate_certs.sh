@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
-crt=$CH_SSL_CERTIFICATE
-key=$CH_SSL_PRIVATE_KEY
-ca_crt=$CH_SSL_CA_CERTIFICATE
+ca_crt=${1:-"$CH_SSL_CA_CERTIFICATE"} && shift
+crt=${1-:"$CH_SSL_CERTIFICATE"} && shift
+key=${1-:"$CH_SSL_PRIVATE_KEY"} && shift
 
-ca_key=${CH_SSL_CA_CERTIFICATE/.pem/.key}
+ca_key=${ca_crt/.pem/.key}
 csr=${key/.key/.csr}
 ext=${key/.key/.ext}
 
@@ -27,5 +27,3 @@ EOL
 
 openssl x509 -req -in "$csr" -CA "$ca_crt" -CAkey "$ca_key" -CAcreateserial -out "$crt" -days 825 -sha256 -extfile "$ext"
 openssl verify -CAfile "$ca_crt" "$crt"
-
-chown clickhouse:clickhouse "$crt" "$key" "$ca_crt" "$ca_key" "$csr" "$ext"

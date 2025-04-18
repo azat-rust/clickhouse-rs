@@ -39,27 +39,35 @@ jobs:
           - tls-rustls
         options:
           - skip_verify=true
-          - certificate=/etc/clickhouse-server/config.d/ca.pem
+          - certificate=/tmp/ca.pem
     runs-on: ubuntu-latest
     env:
       # NOTE: not all tests "secure" aware, so let's define DATABASE_URL explicitly
       # NOTE: sometimes for native-tls default connection_timeout (500ms) is not enough, interestingly that for rustls it is OK.
       DATABASE_URL: "tcp://localhost:9440?compression=lz4&ping_timeout=2s&retry_timeout=3s&secure=true&${{ matrix.options }}&connection_timeout=5s"
+      CH_SSL_CA_CERTIFICATE: /tmp/ca.pem
+      CH_SSL_CERTIFICATE: /tmp/server.crt
+      CH_SSL_PRIVATE_KEY: /tmp/server.key
     steps:
       - uses: actions/checkout@v3
+      - name: Generate TLS certificates
+        run: |
+          extras/ci/generate_certs.sh "$CH_SSL_CA_CERTIFICATE" "$CH_SSL_CERTIFICATE" "$CH_SSL_PRIVATE_KEY"
+          chmod 644 "$CH_SSL_CERTIFICATE" "$CH_SSL_PRIVATE_KEY"
       # NOTE:
       # - we cannot use "services" because they are executed before the steps, i.e. repository checkout.
       # - "job.container.network" is empty, hence "host"
       # - github actions does not support YAML anchors (sigh)
       - name: Run clickhouse-server
         run: docker run
-          -v ./extras/ci/generate_certs.sh:/docker-entrypoint-initdb.d/generate_certs.sh
           -v ./extras/ci/overrides.xml:/etc/clickhouse-server/config.d/overrides.xml
-          -e CH_SSL_CA_CERTIFICATE=/etc/clickhouse-server/config.d/ca.pem
+          -v $CH_SSL_CERTIFICATE:/etc/clickhouse-server/config.d/server.crt
+          -v $CH_SSL_PRIVATE_KEY:/etc/clickhouse-server/config.d/server.key
           -e CH_SSL_CERTIFICATE=/etc/clickhouse-server/config.d/server.crt
           -e CH_SSL_PRIVATE_KEY=/etc/clickhouse-server/config.d/server.key
           -e CLICKHOUSE_SKIP_USER_SETUP=1
           --network host
+          --name clickhouse
           --rm
           --detach
           --publish 9440:9440
