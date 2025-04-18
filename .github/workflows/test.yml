@@ -29,7 +29,12 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
-  build-native-tls:
+  build-tls:
+    strategy:
+      matrix:
+        feature:
+          - tls-native-tls
+          - tls-rustls
     runs-on: ubuntu-latest
     env:
       # NOTE: not all tests "secure" aware, so let's define DATABASE_URL explicitly
@@ -54,34 +59,6 @@ jobs:
           --publish 9440:9440
           clickhouse/clickhouse-server
       - name: Build
-        run: cargo build --features tls-native-tls --verbose
+        run: cargo build --features ${{ matrix.feature }} --verbose
       - name: Run tests
-        run: cargo test --features tls-native-tls --verbose
-
-  build-rustls:
-    runs-on: ubuntu-latest
-    env:
-      # NOTE: not all tests "secure" aware, so let's define DATABASE_URL explicitly
-      DATABASE_URL: "tcp://localhost:9440?compression=lz4&ping_timeout=2s&retry_timeout=3s&secure=true&skip_verify=true"
-    steps:
-      - uses: actions/checkout@v3
-      # NOTE:
-      # - we cannot use "services" because they are executed before the steps, i.e. repository checkout.
-      # - "job.container.network" is empty, hence "host"
-      # - github actions does not support YAML anchors (sigh)
-      - name: Run clickhouse-server
-        run: docker run
-          -v ./extras/ci/generate_certs.sh:/docker-entrypoint-initdb.d/generate_certs.sh
-          -v ./extras/ci/overrides.xml:/etc/clickhouse-server/config.d/overrides.xml
-          -e CH_SSL_CERTIFICATE=/etc/clickhouse-server/config.d/server.crt
-          -e CH_SSL_PRIVATE_KEY=/etc/clickhouse-server/config.d/server.key
-          -e CLICKHOUSE_SKIP_USER_SETUP=1
-          --network host
-          --rm
-          --detach
-          --publish 9440:9440
-          clickhouse/clickhouse-server
-      - name: Build
-        run: cargo build --features tls-rustls --verbose
-      - name: Run tests
-        run: cargo test --features tls-rustls --verbose
+        run: cargo test --features ${{ matrix.feature }} --verbose
