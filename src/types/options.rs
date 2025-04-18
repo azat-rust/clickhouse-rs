@@ -107,8 +107,8 @@ impl Certificate {
     }
 
     /// Parses a PEM-formatted X509 certificate.
-    pub fn from_pem(der: &[u8]) -> Result<Certificate> {
-        let inner = match native_tls::Certificate::from_pem(der) {
+    pub fn from_pem(pem: &[u8]) -> Result<Certificate> {
+        let inner = match native_tls::Certificate::from_pem(pem) {
             Ok(certificate) => certificate,
             Err(err) => return Err(Error::Other(err.to_string().into())),
         };
@@ -139,8 +139,8 @@ impl Certificate {
     }
 
     /// Parses a PEM-formatted X509 certificate.
-    pub fn from_pem(der: &[u8]) -> Result<Certificate> {
-        let certs = rustls_pemfile::certs(&mut der.as_ref())
+    pub fn from_pem(pem: &[u8]) -> Result<Certificate> {
+        let certs = rustls_pemfile::certs(&mut pem.as_ref())
             .map(|result| result.unwrap())
             .collect();
         Ok(Certificate(Arc::new(certs)))
