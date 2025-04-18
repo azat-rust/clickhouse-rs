@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     fmt,
+    fs,
     str::FromStr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -166,6 +167,16 @@ impl PartialEq for Certificate {
     }
 }
 
+#[cfg(feature = "_tls")]
+pub fn load_certificate(file: &str) -> Result<Certificate> {
+    let data = fs::read(file)?;
+    if file.ends_with(".der") || file.ends_with(".cer") {
+        Certificate::from_der(&data)
+    } else {
+        Certificate::from_pem(&data)
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum SettingType {
     String(String),
@@ -315,6 +326,7 @@ impl fmt::Debug for Options {
             .field("connection_timeout", &self.connection_timeout)
             .field("settings", &self.settings)
             .field("alt_hosts", &self.alt_hosts)
+            .field("certificate", &self.certificate)
             .finish()
     }
 }
@@ -590,6 +602,8 @@ where
             "secure" => options.secure = parse_param(key, value, bool::from_str)?,
             #[cfg(feature = "_tls")]
             "skip_verify" => options.skip_verify = parse_param(key, value, bool::from_str)?,
+            #[cfg(feature = "_tls")]
+            "certificate" => options.certificate = Some(parse_param(key, value, load_certificate)?),
             "alt_hosts" => options.alt_hosts = parse_param(key, value, parse_hosts)?,
             _ => {
                 let value = SettingType::String(value.to_string());
