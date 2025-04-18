@@ -39,7 +39,7 @@ jobs:
           - tls-rustls
         options:
           - skip_verify=true
-          - certificate=$CH_SSL_CERTIFICATE
+          - certificate=/etc/clickhouse-server/config.d/ca.pem
     runs-on: ubuntu-latest
     env:
       # NOTE: not all tests "secure" aware, so let's define DATABASE_URL explicitly
@@ -55,6 +55,7 @@ jobs:
         run: docker run
           -v ./extras/ci/generate_certs.sh:/docker-entrypoint-initdb.d/generate_certs.sh
           -v ./extras/ci/overrides.xml:/etc/clickhouse-server/config.d/overrides.xml
+          -e CH_SSL_CA_CERTIFICATE=/etc/clickhouse-server/config.d/ca.pem
           -e CH_SSL_CERTIFICATE=/etc/clickhouse-server/config.d/server.crt
           -e CH_SSL_PRIVATE_KEY=/etc/clickhouse-server/config.d/server.key
           -e CLICKHOUSE_SKIP_USER_SETUP=1
