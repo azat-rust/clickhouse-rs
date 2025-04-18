@@ -37,23 +37,30 @@ jobs:
         feature:
           - tls-native-tls
           - tls-rustls
-        options:
-          - skip_verify=true
-          - ca_certificate=/tmp/ca.pem
+        database_url:
+          # for TLS we need skip_verify for self-signed certificate
+          - tcp://localhost:9440?skip_verify=true
+          # we don't need skip_verify when we pass CA cert
+          - tcp://localhost:9440?ca_certificate=/tmp/ca.pem
+          # auth via mTLS
+          - tcp://tls@localhost:9440?ca_certificate=/tmp/ca.pem&certificate_file=/tmp/client.crt&private_key_file=/tmp/client.key
     runs-on: ubuntu-latest
     env:
       # NOTE: not all tests "secure" aware, so let's define DATABASE_URL explicitly
       # NOTE: sometimes for native-tls default connection_timeout (500ms) is not enough, interestingly that for rustls it is OK.
-      DATABASE_URL: "tcp://localhost:9440?compression=lz4&ping_timeout=2s&retry_timeout=3s&secure=true&${{ matrix.options }}&connection_timeout=5s"
+      DATABASE_URL: ${{ matrix.database_url }}&compression=lz4&ping_timeout=2s&retry_timeout=3s&secure=true&connection_timeout=5s
       CH_SSL_CA_CERTIFICATE: /tmp/ca.pem
       CH_SSL_CERTIFICATE: /tmp/server.crt
       CH_SSL_PRIVATE_KEY: /tmp/server.key
+      CH_SSL_CLIENT_PRIVATE_KEY: /tmp/client.key
+      CH_SSL_CLIENT_CERTIFICATE: /tmp/client.crt
     steps:
       - uses: actions/checkout@v3
       - name: Generate TLS certificates
         run: |
-          extras/ci/generate_certs.sh "$CH_SSL_CA_CERTIFICATE" "$CH_SSL_CERTIFICATE" "$CH_SSL_PRIVATE_KEY"
-          chmod 644 "$CH_SSL_CERTIFICATE" "$CH_SSL_PRIVATE_KEY"
+          extras/ci/generate_certs.sh "$CH_SSL_CA_CERTIFICATE" "$CH_SSL_CERTIFICATE" "$CH_SSL_PRIVATE_KEY" "$CH_SSL_CLIENT_CERTIFICATE" "$CH_SSL_CLIENT_PRIVATE_KEY"
+          # server needs access to those
+          chmod 644 "$CH_SSL_CERTIFICATE" "$CH_SSL_PRIVATE_KEY" "$CH_SSL_CA_CERTIFICATE"
       # NOTE:
       # - we cannot use "services" because they are executed before the steps, i.e. repository checkout.
       # - "job.container.network" is empty, hence "host"
@@ -61,10 +68,13 @@ jobs:
       - name: Run clickhouse-server
         run: docker run
           -v ./extras/ci/overrides.xml:/etc/clickhouse-server/config.d/overrides.xml
+          -v ./extras/ci/users-overrides.yaml:/etc/clickhouse-server/users.d/overrides.yaml
           -v $CH_SSL_CERTIFICATE:/etc/clickhouse-server/config.d/server.crt
           -v $CH_SSL_PRIVATE_KEY:/etc/clickhouse-server/config.d/server.key
+          -v $CH_SSL_CA_CERTIFICATE:/etc/clickhouse-server/config.d/ca.pem
           -e CH_SSL_CERTIFICATE=/etc/clickhouse-server/config.d/server.crt
           -e CH_SSL_PRIVATE_KEY=/etc/clickhouse-server/config.d/server.key
+          -e CH_SSL_CA_CERTIFICATE=/etc/clickhouse-server/config.d/ca.pem
           -e CLICKHOUSE_SKIP_USER_SETUP=1
           --network host
           --name clickhouse

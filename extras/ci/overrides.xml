@@ -3,7 +3,8 @@
         <server>
             <certificateFile from_env="CH_SSL_CERTIFICATE" replace="1"></certificateFile>
             <privateKeyFile from_env="CH_SSL_PRIVATE_KEY" replace="1"></privateKeyFile>
-            <verificationMode>none</verificationMode>
+            <caConfig from_env="CH_SSL_CA_CERTIFICATE" replace="1"></caConfig>
+            <verificationMode>relaxed</verificationMode>
             <loadDefaultCAFile>true</loadDefaultCAFile>
             <cacheSessions>true</cacheSessions>
             <disableProtocols>sslv2,sslv3</disableProtocols>
