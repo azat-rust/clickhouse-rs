@@ -104,7 +104,7 @@ impl State {
         State::Tcp(TcpState::Fail(Some(conn_error)))
     }
 
-    #[cfg(feature = "_tls")]
+    #[cfg(feature = "tls-rustls")]
     fn tls_err(e: TlsError) -> Self {
         State::Tls(TlsState::Fail(Some(ConnectionError::TlsError(e))))
     }
@@ -239,6 +239,9 @@ impl ConnectingStream {
                 if let Some(certificate) = options.ca_certificate.clone() {
                     let native_cert = native_tls::Certificate::from(certificate);
                     builder.add_root_certificate(native_cert);
+                }
+                if let Some(identity) = options.tls_identity.clone() {
+                    builder.identity(identity.into());
                 }
 
                 Self {

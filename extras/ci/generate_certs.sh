@@ -6,6 +6,7 @@ key=${1-:"$CH_SSL_PRIVATE_KEY"} && shift
 
 client_crt=${1-:"$CH_SSL_CLIENT_CERTIFICATE"} && shift
 client_key=${1-:"$CH_SSL_CLIENT_PRIVATE_KEY"} && shift
+client_p12=${1-:"$CH_SSL_CLIENT_P12"} && shift
 
 ca_key=${ca_crt/.pem/.key}
 csr=${key/.key/.csr}
@@ -47,3 +48,5 @@ openssl genrsa -out "$client_key" 2048
 openssl req -new -key "$client_key" -out "$client_csr" -subj "/C=US/ST=DevState/O=DevOrg/CN=MyClient"
 openssl x509 -req -in "$client_csr" -CA "$ca_crt" -CAkey "$ca_key" -CAcreateserial -out "$client_crt" -days 3650 -sha256 -extfile "$client_ext"
 openssl verify -CAfile "$ca_crt" "$client_crt"
+
+openssl pkcs12 -export -inkey "$client_key" -in "$client_crt" -certfile "$ca_crt" -out "$client_p12" -passout pass:

@@ -197,25 +197,57 @@ impl From<PrivateKey> for rustls::pki_types::PrivateKeyDer<'static> {
         rustls::pki_types::PrivateKeyDer::clone_key(value.0.as_ref())
     }
 }
-
-#[cfg(feature = "_tls")]
+#[cfg(feature = "tls-rustls")]
 impl fmt::Debug for PrivateKey {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "[Private Key]")
     }
 }
-
-#[cfg(feature = "_tls")]
+#[cfg(feature = "tls-rustls")]
 impl PartialEq for PrivateKey {
     fn eq(&self, _other: &Self) -> bool {
         true
     }
 }
-
-#[cfg(feature = "_tls")]
+#[cfg(feature = "tls-rustls")]
 pub fn load_private_key(file: &str) -> Result<PrivateKey> {
     let data = fs::read(file)?;
     PrivateKey::from_pem(&data)
+}
+
+/// Identity for mTLS for native-tls
+#[cfg(feature = "tls-native-tls")]
+#[derive(Clone)]
+pub struct TlsIdentity(Arc<native_tls::Identity>);
+#[cfg(feature = "tls-native-tls")]
+impl TlsIdentity {
+    pub fn from_pkcs12_der(der: &[u8]) -> Result<Self> {
+        // FIXME: support password
+        Ok(Self(Arc::new(native_tls::Identity::from_pkcs12(der, "").map_err(|_| UrlError::Invalid)?)))
+    }
+}
+#[cfg(feature = "tls-native-tls")]
+impl From<TlsIdentity> for native_tls::Identity {
+    fn from(value: TlsIdentity) -> Self {
+        value.0.as_ref().clone()
+    }
+}
+#[cfg(feature = "tls-native-tls")]
+impl fmt::Debug for TlsIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "[Private Key]")
+    }
+}
+#[cfg(feature = "tls-native-tls")]
+impl PartialEq for TlsIdentity {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+#[cfg(feature = "tls-native-tls")]
+pub fn load_tls_identity(file: &str) -> Result<TlsIdentity> {
+    let data = fs::read(file)?;
+    TlsIdentity::from_pkcs12_der(&data)
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -348,8 +380,11 @@ pub struct Options {
     pub(crate) certificate_file: Option<Certificate>,
 
     /// Private key for certificate.
-    #[cfg(feature = "_tls")]
+    /// TODO: merge private_key_file + certificate_file into client_tls_identity
+    #[cfg(feature = "tls-rustls")]
     pub(crate) private_key_file: Option<PrivateKey>,
+    #[cfg(feature = "tls-native-tls")]
+    pub(crate) tls_identity: Option<TlsIdentity>,
 
     /// Query settings
     pub(crate) settings: HashMap<String, SettingValue>,
@@ -408,8 +443,10 @@ impl Default for Options {
             ca_certificate: None,
             #[cfg(feature = "_tls")]
             certificate_file: None,
-            #[cfg(feature = "_tls")]
+            #[cfg(feature = "tls-rustls")]
             private_key_file: None,
+            #[cfg(feature = "tls-native-tls")]
+            tls_identity: None,
             settings: HashMap::new(),
             alt_hosts: Vec::new(),
         }
@@ -570,10 +607,16 @@ impl Options {
         => certificate_file: Option<Certificate>
     }
 
-    #[cfg(feature = "_tls")]
+    #[cfg(feature = "tls-rustls")]
     property! {
         /// Private key for certificate.
         => private_key_file: Option<PrivateKey>
+    }
+
+    #[cfg(feature = "tls-native-tls")]
+    property! {
+        /// Identity for mTLS.
+        => tls_identity: Option<TlsIdentity>
     }
 
     property! {
@@ -671,8 +714,10 @@ where
             "ca_certificate" => options.ca_certificate = Some(parse_param(key, value, load_certificate)?),
             #[cfg(feature = "_tls")]
             "certificate_file" => options.certificate_file = Some(parse_param(key, value, load_certificate)?),
-            #[cfg(feature = "_tls")]
+            #[cfg(feature = "tls-rustls")]
             "private_key_file" => options.private_key_file = Some(parse_param(key, value, load_private_key)?),
+            #[cfg(feature = "tls-native-tls")]
+            "tls_identity" => options.tls_identity = Some(parse_param(key, value, load_tls_identity)?),
             "alt_hosts" => options.alt_hosts = parse_param(key, value, parse_hosts)?,
             _ => {
                 let value = SettingType::String(value.to_string());

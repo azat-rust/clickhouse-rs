@@ -42,8 +42,12 @@ jobs:
           - tcp://localhost:9440?skip_verify=true
           # we don't need skip_verify when we pass CA cert
           - tcp://localhost:9440?ca_certificate=/tmp/ca.pem
-          # auth via mTLS
-          - tcp://tls@localhost:9440?ca_certificate=/tmp/ca.pem&certificate_file=/tmp/client.crt&private_key_file=/tmp/client.key
+        # mTLS
+        include:
+          - feature: tls-native-tls
+            database_url: tcp://tls@localhost:9440?ca_certificate=/tmp/ca.pem&tls_identity=/tmp/client.p12
+          - feature: tls-rustls
+            database_url: tcp://tls@localhost:9440?ca_certificate=/tmp/ca.pem&certificate_file=/tmp/client.crt&private_key_file=/tmp/client.key
     runs-on: ubuntu-latest
     env:
       # NOTE: not all tests "secure" aware, so let's define DATABASE_URL explicitly
@@ -54,11 +58,12 @@ jobs:
       CH_SSL_PRIVATE_KEY: /tmp/server.key
       CH_SSL_CLIENT_PRIVATE_KEY: /tmp/client.key
       CH_SSL_CLIENT_CERTIFICATE: /tmp/client.crt
+      CH_SSL_CLIENT_P12: /tmp/client.p12
     steps:
       - uses: actions/checkout@v3
       - name: Generate TLS certificates
         run: |
-          extras/ci/generate_certs.sh "$CH_SSL_CA_CERTIFICATE" "$CH_SSL_CERTIFICATE" "$CH_SSL_PRIVATE_KEY" "$CH_SSL_CLIENT_CERTIFICATE" "$CH_SSL_CLIENT_PRIVATE_KEY"
+          extras/ci/generate_certs.sh "$CH_SSL_CA_CERTIFICATE" "$CH_SSL_CERTIFICATE" "$CH_SSL_PRIVATE_KEY" "$CH_SSL_CLIENT_CERTIFICATE" "$CH_SSL_CLIENT_PRIVATE_KEY" "$CH_SSL_CLIENT_P12"
           # server needs access to those
           chmod 644 "$CH_SSL_CERTIFICATE" "$CH_SSL_PRIVATE_KEY" "$CH_SSL_CA_CERTIFICATE"
       # NOTE:
