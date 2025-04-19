@@ -35,6 +35,8 @@ use crate::{errors::ConnectionError, io::Stream as InnerStream, Options};
 use tokio_native_tls::TlsStream;
 #[cfg(feature = "tls-rustls")]
 use tokio_rustls::client::TlsStream;
+#[cfg(feature = "_tls")]
+use crate::types::ClientTlsIdentity;
 
 type Result<T> = std::result::Result<T, ConnectionError>;
 
@@ -130,6 +132,7 @@ pub(crate) struct ConnectingStream {
     state: State,
 }
 
+#[cfg(feature = "tls-rustls")]
 #[derive(Debug)]
 struct DummyTlsVerifier;
 
@@ -240,8 +243,9 @@ impl ConnectingStream {
                     let native_cert = native_tls::Certificate::from(certificate);
                     builder.add_root_certificate(native_cert);
                 }
-                if let Some(identity) = options.tls_identity.clone() {
-                    builder.identity(identity.into());
+                if let Some(identity) = &options.client_tls_identity {
+                    let ClientTlsIdentity::Pkcs(pkcs) = identity;
+                    builder.identity(pkcs.clone());
                 }
 
                 Self {
@@ -301,12 +305,9 @@ impl ConnectingStream {
                     ClientConfig::builder()
                         .with_root_certificates(cert_store)
                 };
-                let config = if let Some(certificate_file) = options.certificate_file.clone() {
-                    if let Some(private_key_file) = options.private_key_file.clone() {
-                        builder.with_client_auth_cert(certificate_file.into(), private_key_file.into())
-                    } else {
-                        Ok(builder.with_no_client_auth())
-                    }
+                let config = if let Some(identity) = &options.client_tls_identity {
+                    let ClientTlsIdentity::Pem { key, certs } = identity;
+                    builder.with_client_auth_cert(certs.clone().into(), key.clone_key())
                 } else {
                     Ok(builder.with_no_client_auth())
                 };

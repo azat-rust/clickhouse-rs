@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
 
-ca_crt=${1:-"$CH_SSL_CA_CERTIFICATE"} && shift
-crt=${1-:"$CH_SSL_CERTIFICATE"} && shift
-key=${1-:"$CH_SSL_PRIVATE_KEY"} && shift
+out=$1 && shift
+mkdir -p "$out"
+cd "$out"
 
-client_crt=${1-:"$CH_SSL_CLIENT_CERTIFICATE"} && shift
-client_key=${1-:"$CH_SSL_CLIENT_PRIVATE_KEY"} && shift
-client_p12=${1-:"$CH_SSL_CLIENT_P12"} && shift
+#
+# CA
+#
+openssl genrsa -out ca.key 4096
+openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.pem -subj "/C=US/ST=DevState/O=DevOrg/CN=MyDevCA"
 
-ca_key=${ca_crt/.pem/.key}
-csr=${key/.key/.csr}
-ext=${key/.key/.ext}
+#
+# server
+#
+openssl genrsa -out server.key 2048
+openssl req -new -key server.key -out server.csr -subj "/C=US/ST=DevState/O=DevOrg/CN=localhost"
 
-openssl genrsa -out "$ca_key" 4096
-openssl req -x509 -new -nodes -key "$ca_key" -sha256 -days 3650 -out "$ca_crt" -subj "/C=US/ST=DevState/O=DevOrg/CN=MyDevCA"
-
-openssl genrsa -out "$key" 2048
-openssl req -new -key "$key" -out "$csr" -subj "/C=US/ST=DevState/O=DevOrg/CN=localhost"
-
-cat > "$ext" <<EOL
+cat > server.ext <<EOL
 authorityKeyIdentifier=keyid,issuer
 basicConstraints=CA:FALSE
 keyUsage = digitalSignature, keyEncipherment
@@ -29,12 +27,13 @@ subjectAltName = @alt_names
 DNS.1 = localhost
 EOL
 
-openssl x509 -req -in "$csr" -CA "$ca_crt" -CAkey "$ca_key" -CAcreateserial -out "$crt" -days 825 -sha256 -extfile "$ext"
-openssl verify -CAfile "$ca_crt" "$crt"
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out server.crt -days 825 -sha256 -extfile server.ext
+openssl verify -CAfile ca.pem server.crt
 
-client_csr=${client_key/.key/.csr}
-client_ext=${client_key/.key/.ext}
-cat > "$client_ext" <<EOL
+#
+# client
+#
+cat > client.ext <<EOL
 basicConstraints=CA:FALSE
 keyUsage = digitalSignature
 extendedKeyUsage = clientAuth
@@ -44,9 +43,10 @@ subjectAltName = @alt_names
 DNS.1 = localhost
 EOL
 
-openssl genrsa -out "$client_key" 2048
-openssl req -new -key "$client_key" -out "$client_csr" -subj "/C=US/ST=DevState/O=DevOrg/CN=MyClient"
-openssl x509 -req -in "$client_csr" -CA "$ca_crt" -CAkey "$ca_key" -CAcreateserial -out "$client_crt" -days 3650 -sha256 -extfile "$client_ext"
-openssl verify -CAfile "$ca_crt" "$client_crt"
+openssl genrsa -out client.key 2048
+openssl req -new -key client.key -out client.csr -subj "/C=US/ST=DevState/O=DevOrg/CN=MyClient"
+openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out client.crt -days 3650 -sha256 -extfile client.ext
+openssl verify -CAfile ca.pem client.crt
 
-openssl pkcs12 -export -inkey "$client_key" -in "$client_crt" -certfile "$ca_crt" -out "$client_p12" -passout pass:
+# server needs access to those
+chmod 644 ca.pem server.key server.crt
