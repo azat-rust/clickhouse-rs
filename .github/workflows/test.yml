@@ -7,7 +7,6 @@ on:
   pull_request:
     branches:
       - async-await
-      - next
 
 env:
   CARGO_TERM_COLOR: always
