@@ -95,6 +95,7 @@ features = ["std"]
 env_logger = "^0.10"
 pretty_assertions = "1.3.0"
 rand = "^0.8"
+uuid = { version = "^1.4", features = [ "v4" ] }
 
 [dev-dependencies.tokio]
 version = "^1.32"
