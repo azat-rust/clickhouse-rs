@@ -44,13 +44,13 @@ fn encode_command(cmd: &Cmd) -> Result<Vec<u8>> {
 }
 
 fn encode_hello(context: &Context) -> Result<Vec<u8>> {
-    trace!("[hello]        -> {}", client_info::description());
+    let options = context.options.get()?;
+
+    trace!("[hello]        -> {}", client_info::description(&options.client_name));
 
     let mut encoder = Encoder::new();
     encoder.uvarint(protocol::CLIENT_HELLO);
-    client_info::write(&mut encoder);
-
-    let options = context.options.get()?;
+    client_info::write(&mut encoder, &options.client_name);
 
     encoder.string(&options.database);
     encoder.string(&options.username);
@@ -83,6 +83,8 @@ fn encode_query(query: &Query, context: &Context) -> Result<Vec<u8>> {
     encoder.uvarint(protocol::CLIENT_QUERY);
     encoder.string("");
 
+    let options = context.options.get()?;
+
     {
         let hostname = &context.hostname;
         encoder.uvarint(1);
@@ -93,7 +95,7 @@ fn encode_query(query: &Query, context: &Context) -> Result<Vec<u8>> {
         encoder.string(hostname);
         encoder.string(hostname);
     }
-    client_info::write(&mut encoder);
+    client_info::write(&mut encoder, &options.client_name);
 
     if context.server_info.revision >= protocol::DBMS_MIN_REVISION_WITH_QUOTA_KEY_IN_CLIENT_INFO {
         encoder.string("");
@@ -102,8 +104,6 @@ fn encode_query(query: &Query, context: &Context) -> Result<Vec<u8>> {
     if context.server_info.revision >= protocol::DBMS_MIN_REVISION_WITH_VERSION_PATCH {
         encoder.uvarint(0);
     }
-
-    let options = context.options.get()?;
 
     let settings_format = if context.server_info.revision
         >= protocol::DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS

@@ -361,6 +361,9 @@ pub struct Options {
 
     /// Comma separated list of single address host for load-balancing.
     pub(crate) alt_hosts: Vec<Url>,
+
+    /// Client name (defaults to `Rust SQLDriver`).
+    pub(crate) client_name: String
 }
 
 impl fmt::Debug for Options {
@@ -380,7 +383,8 @@ impl fmt::Debug for Options {
             .field("ping_timeout", &self.ping_timeout)
             .field("connection_timeout", &self.connection_timeout)
             .field("settings", &self.settings)
-            .field("alt_hosts", &self.alt_hosts);
+            .field("alt_hosts", &self.alt_hosts)
+            .field("client_name", &self.client_name);
 
         #[cfg(feature = "_tls")]
         res
@@ -422,6 +426,7 @@ impl Default for Options {
             client_tls_identity: None,
             settings: HashMap::new(),
             alt_hosts: Vec::new(),
+            client_name: "Rust SQLDriver".into(),
         }
     }
 }
@@ -589,6 +594,11 @@ impl Options {
         /// Comma separated list of single address host for load-balancing.
         => alt_hosts: Vec<Url>
     }
+
+    property! {
+        /// Client name (defaults to `Rust SQLDriver`).
+        => client_name: &str
+    }
 }
 
 impl FromStr for Options {
@@ -683,6 +693,7 @@ where
             #[cfg(feature = "_tls")]
             "client_private_key" => client_private_key = Some(value),
             "alt_hosts" => options.alt_hosts = parse_param(key, value, parse_hosts)?,
+            "client_name" => options.client_name = parse_param(key, value, String::from_str)?,
             _ => {
                 let value = SettingType::String(value.to_string());
                 options.settings.insert(

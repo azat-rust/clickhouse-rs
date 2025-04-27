@@ -2574,3 +2574,24 @@ async fn test_insert_big_block() -> Result<(), Error> {
     assert_eq!(format!("{:?}", expected.as_ref()), format!("{:?}", &actual));
     Ok(())
 }
+
+#[cfg(feature = "tokio_io")]
+#[tokio::test]
+async fn test_client_name() -> Result<(), Error> {
+    let uuid = Uuid::new_v4().to_string();
+    let client_name = format!("clickhouse-rs-tests-{}", uuid);
+    let log_comment = format!("tests-{}", uuid);
+    let options = Options::from_str(&format!("{}&client_name={}", database_url(), client_name))?
+        .with_setting("log_comment", &*log_comment, true);
+    let pool = Pool::new(options);
+    let mut c = pool.get_handle().await?;
+
+    c.execute("SELECT 1").await?;
+    c.execute("SYSTEM FLUSH LOGS").await?;
+    let rows = c
+        .query(format!("SELECT client_name FROM system.query_log WHERE Settings['log_comment'] = '{log_comment}' AND query = 'SELECT 1' LIMIT 1"))
+        .fetch_all()
+        .await?;
+    assert_eq!(client_name, rows.get::<String, _>(0, "client_name")?);
+    Ok(())
+}
