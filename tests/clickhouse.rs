@@ -65,7 +65,9 @@ async fn test_ping() -> Result<(), Error> {
 #[cfg(feature = "tokio_io")]
 #[tokio::test]
 async fn test_connection_by_wrong_address() -> Result<(), Error> {
-    let pool = Pool::new("tcp://badaddr:9000");
+    // Broadcast address: connect() fails immediately, and no DNS is involved
+    // (resolver behavior is environment-dependent and can be slow).
+    let pool = Pool::new("tcp://255.255.255.255:9000?connection_timeout=500ms&retry_timeout=500ms&send_retries=1");
     let ret: Result<(), Error> = async move {
         let mut c = pool.get_handle().await?;
         c.ping().await?;
