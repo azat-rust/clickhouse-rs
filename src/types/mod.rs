@@ -392,21 +392,22 @@ impl SqlType {
     }
 
     pub(crate) fn is_inner_low_cardinality(&self) -> bool {
-        matches!(
-            self,
+        match self {
             SqlType::String
-                | SqlType::FixedString(_)
-                | SqlType::Date
-                | SqlType::DateTime(_)
-                | SqlType::UInt8
-                | SqlType::UInt16
-                | SqlType::UInt32
-                | SqlType::UInt64
-                | SqlType::Int8
-                | SqlType::Int16
-                | SqlType::Int32
-                | SqlType::Int64
-        )
+            | SqlType::FixedString(_)
+            | SqlType::Date
+            | SqlType::DateTime(_)
+            | SqlType::UInt8
+            | SqlType::UInt16
+            | SqlType::UInt32
+            | SqlType::UInt64
+            | SqlType::Int8
+            | SqlType::Int16
+            | SqlType::Int32
+            | SqlType::Int64 => true,
+            SqlType::Nullable(inner) => inner.is_inner_low_cardinality(),
+            _ => false,
+        }
     }
 
     pub fn to_string(&self) -> Cow<'static, str> {

@@ -18,7 +18,6 @@ use crate::{
             fixed_string::{FixedStringAdapter, NullableFixedStringAdapter},
             ip::{IpColumnData, Ipv4, Ipv6},
             iter::Iterable,
-            low_cardinality::LowCardinalityColumnData,
             simple_agg_func::SimpleAggregateFunctionColumnData,
             string::StringAdapter,
         },
@@ -180,6 +179,7 @@ impl<K: ColumnType> Column<K> {
     pub(crate) fn read<R: ReadEx>(reader: &mut R, size: usize, tz: Tz) -> Result<Column<K>> {
         let name = reader.read_string()?;
         let type_name = reader.read_string()?;
+        <dyn ColumnData>::load_prefix(reader, &type_name, size)?;
         let data =
             <dyn ColumnData>::load_data::<ArcColumnWrapper, _>(reader, &type_name, size, tz)?;
         let column = Self {
@@ -209,6 +209,9 @@ impl<K: ColumnType> Column<K> {
         encoder.string(&self.name);
         encoder.string(self.data.sql_type().to_string().as_ref());
         let len = self.data.len();
+        if len > 0 {
+            self.data.save_prefix(encoder);
+        }
         self.data.save(encoder, 0, len);
     }
 
@@ -236,23 +239,9 @@ impl<K: ColumnType> Column<K> {
         match (dst_type.clone(), src_type.clone()) {
             (SqlType::LowCardinality(inner), src_type) if src_type.is_inner_low_cardinality() => {
                 let name = self.name().to_owned();
-                let tz = self.data.get_timezone().unwrap_or(Tz::Zulu);
-                let mut low_card_data = LowCardinalityColumnData::empty(inner, tz, self.len())?;
-                for i in 0..self.len() {
-                    low_card_data.push(self.at(i).into());
-                }
-
-                if inner.is_datetime() {
-                    if let Some(casted_data) =
-                        low_card_data.inner.cast_to(&low_card_data.inner, inner)
-                    {
-                        low_card_data.inner = casted_data;
-                    }
-                }
-
                 Ok(Column {
                     name,
-                    data: Arc::new(low_card_data),
+                    data: low_cardinality::cast_to_low_cardinality(&self.data, inner)?,
                     _marker: marker::PhantomData,
                 })
             }

@@ -2597,3 +2597,149 @@ async fn test_client_name() -> Result<(), Error> {
     assert_eq!(client_name, rows.get::<String, _>(0, "client_name")?);
     Ok(())
 }
+
+#[tokio::test]
+async fn probe_lc_combos() -> Result<(), Error> {
+    let options = Options::from_str(&database_url())?
+        .with_setting("allow_suspicious_low_cardinality_types", 1, true);
+    let pool = Pool::new(options);
+    let mut c = pool.get_handle().await?;
+
+    // read-only probes via server-side data
+    let cases = [
+        ("Map(LowCardinality(String), UInt32)", "SELECT map('a', toUInt32(1), 'b', toUInt32(2)) AS x"),
+        ("Array(LowCardinality(String))", "SELECT ['a','b','a'] :: Array(LowCardinality(String)) AS x"),
+        ("LowCardinality(Nullable(String))", "SELECT CAST('a', 'LowCardinality(Nullable(String))') AS x"),
+        ("Map(LowCardinality(String), LowCardinality(String))", "SELECT map('a','b') :: Map(LowCardinality(String), LowCardinality(String)) AS x"),
+    ];
+    for (name, q) in cases {
+        match c.query(q).fetch_all().await {
+            Ok(b) => println!("OK   read {name}: rows={}", b.row_count()),
+            Err(e) => println!("FAIL read {name}: {e}"),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_lc_nullable() -> Result<(), Error> {
+    let ddl = r"
+        CREATE TABLE IF NOT EXISTS clickhouse_lc_nullable (
+            id   UInt64,
+            text LowCardinality(Nullable(String))
+        ) ENGINE = Memory
+    ";
+    let block = Block::new()
+        .column("id", vec![1_u64, 2, 3, 4])
+        .column("text", vec![Some("A"), None, Some("A"), Some("B")]);
+
+    let options = Options::from_str(&database_url())?
+        .with_setting("allow_suspicious_low_cardinality_types", 1, true);
+    let pool = Pool::new(options);
+    let mut c = pool.get_handle().await?;
+    c.execute("DROP TABLE IF EXISTS clickhouse_lc_nullable").await?;
+    c.execute(ddl).await?;
+    c.insert("clickhouse_lc_nullable", block).await?;
+
+    let block = c
+        .query("SELECT id, text FROM clickhouse_lc_nullable ORDER BY id")
+        .fetch_all()
+        .await?;
+    let got: Vec<Option<String>> = (0..block.row_count())
+        .map(|i| block.get(i, "text").unwrap())
+        .collect();
+    assert_eq!(
+        got,
+        vec![Some("A".into()), None, Some("A".into()), Some("B".into())]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_lc_in_array_and_map() -> Result<(), Error> {
+    let options = Options::from_str(&database_url())?
+        .with_setting("allow_suspicious_low_cardinality_types", 1, true);
+    let pool = Pool::new(options);
+    let mut c = pool.get_handle().await?;
+
+    // read-only: server-produced nested LowCardinality
+    let block = c
+        .query(
+            "SELECT \
+             ['a','b','a'] :: Array(LowCardinality(String)) AS arr, \
+             map('k1','v1','k2','v2') :: Map(LowCardinality(String), LowCardinality(String)) AS m",
+        )
+        .fetch_all()
+        .await?;
+    assert_eq!(block.row_count(), 1);
+
+    let arr: Vec<String> = block.get::<Vec<_>, _>(0, "arr")?;
+    assert_eq!(arr, vec!["a".to_string(), "b".into(), "a".into()]);
+
+    let m: HashMap<String, String> = block.get(0, "m")?;
+    assert_eq!(m.get("k1"), Some(&"v1".to_string()));
+    assert_eq!(m.get("k2"), Some(&"v2".to_string()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_lc_nested_insert() -> Result<(), Error> {
+    let ddl = r"
+        CREATE TABLE IF NOT EXISTS clickhouse_lc_nested (
+            id  UInt64,
+            arr Array(LowCardinality(String))
+        ) ENGINE = Memory
+    ";
+    let block = Block::new()
+        .column("id", vec![1_u64, 2])
+        .column("arr", vec![vec!["a", "b", "a"], vec!["c"]]);
+
+    let options = Options::from_str(&database_url())?
+        .with_setting("allow_suspicious_low_cardinality_types", 1, true);
+    let pool = Pool::new(options);
+    let mut c = pool.get_handle().await?;
+    c.execute("DROP TABLE IF EXISTS clickhouse_lc_nested").await?;
+    c.execute(ddl).await?;
+    c.insert("clickhouse_lc_nested", block).await?;
+
+    let block = c
+        .query("SELECT id, arr FROM clickhouse_lc_nested ORDER BY id")
+        .fetch_all()
+        .await?;
+    let a0: Vec<String> = block.get(0, "arr")?;
+    let a1: Vec<String> = block.get(1, "arr")?;
+    assert_eq!(a0, vec!["a".to_string(), "b".into(), "a".into()]);
+    assert_eq!(a1, vec!["c".to_string()]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_lc_server_read_combos() -> Result<(), Error> {
+    let options = Options::from_str(&database_url())?
+        .with_setting("allow_suspicious_low_cardinality_types", 1, true);
+    let pool = Pool::new(options);
+    let mut c = pool.get_handle().await?;
+
+    // server-serialized LowCardinality(Nullable(String)) with an actual NULL
+    let block = c
+        .query(
+            "SELECT n FROM ( \
+               SELECT 1 AS i, 'a' :: LowCardinality(Nullable(String)) AS n \
+               UNION ALL SELECT 2, CAST(NULL, 'LowCardinality(Nullable(String))') \
+             ) ORDER BY i",
+        )
+        .fetch_all()
+        .await?;
+    let got: Vec<Option<String>> =
+        (0..block.row_count()).map(|i| block.get(i, "n").unwrap()).collect();
+    assert_eq!(got, vec![Some("a".to_string()), None]);
+
+    // LowCardinality key only in a Map
+    let block = c
+        .query("SELECT map('x', toUInt32(7)) :: Map(LowCardinality(String), UInt32) AS m")
+        .fetch_all()
+        .await?;
+    let m: HashMap<String, u32> = block.get(0, "m")?;
+    assert_eq!(m.get("x"), Some(&7_u32));
+    Ok(())
+}

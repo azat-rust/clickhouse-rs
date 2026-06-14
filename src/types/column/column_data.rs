@@ -20,6 +20,14 @@ pub trait LowCardinalityAccessor {
 pub trait ColumnData {
     fn sql_type(&self) -> SqlType;
     fn save(&self, encoder: &mut Encoder, start: usize, end: usize);
+
+    /// Serialize the per-column serialization-state prefix.
+    ///
+    /// In the native protocol every `LowCardinality` node writes a single
+    /// `u64` key-version once, before any column data and ahead of enclosing
+    /// `Array`/`Map` offsets. Composite columns recurse into their children;
+    /// every other column writes nothing.
+    fn save_prefix(&self, _encoder: &mut Encoder) {}
     fn len(&self) -> usize;
     fn push(&mut self, value: Value);
     fn at(&self, index: usize) -> ValueRef;

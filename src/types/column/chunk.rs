@@ -35,6 +35,10 @@ impl ColumnData for ChunkColumnData {
         )
     }
 
+    fn save_prefix(&self, encoder: &mut Encoder) {
+        self.data.save_prefix(encoder);
+    }
+
     fn len(&self) -> usize {
         self.range.len()
     }

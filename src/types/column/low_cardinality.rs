@@ -1,4 +1,5 @@
 use chrono_tz::Tz;
+use either::Either;
 use std::{borrow::Cow, collections::HashMap, mem, ptr, sync::Arc};
 
 use crate::{
@@ -180,9 +181,13 @@ impl Default for LowCardinalityInternals {
 }
 
 pub(crate) struct LowCardinalityColumnData {
+    // Dictionary of distinct values, serialized as the nested (non-`Nullable`)
+    // type. When `nullable`, index 0 of `index` denotes NULL and the matching
+    // dictionary slot holds the type default.
     pub(crate) inner: ArcColumnData,
     pub(crate) index: LowCardinalityIndex,
     pub(crate) value_map: Option<HashMap<Value, usize>>,
+    pub(crate) nullable: bool,
 }
 
 impl LowCardinalityColumnData {
@@ -192,12 +197,27 @@ impl LowCardinalityColumnData {
         size: usize,
         tz: Tz,
     ) -> Result<Self> {
-        let (inner, index) = read_inner(reader, inner_type, size, tz)?;
+        let (nullable, dict_type) = match strip_nullable(inner_type) {
+            Some(nested) => (true, nested),
+            None => (false, inner_type),
+        };
+        let (inner, index) = read_inner(reader, dict_type, size, tz)?;
         Ok(LowCardinalityColumnData {
             inner,
             index,
             value_map: None,
+            nullable,
         })
+    }
+
+    pub(crate) fn load_prefix<R: ReadEx>(reader: &mut R) -> Result<()> {
+        let version: u64 = reader.read_scalar()?;
+        if version != LOW_CARDINALITY_VERSION {
+            return Err(Error::Driver(DriverError::Deserialize(Cow::from(
+                "Invalid low cardinality version",
+            ))));
+        }
+        Ok(())
     }
 
     pub(crate) fn empty(
@@ -205,16 +225,57 @@ impl LowCardinalityColumnData {
         timezone: Tz,
         capacity: usize,
     ) -> Result<LowCardinalityColumnData> {
+        let (nullable, dict_type) = match inner {
+            SqlType::Nullable(nested) => (true, (*nested).clone()),
+            other => (false, other.clone()),
+        };
+
+        let mut inner_data = <dyn ColumnData>::from_type::<ArcColumnWrapper>(
+            dict_type.clone(),
+            timezone,
+            capacity,
+        )?;
+
+        if nullable {
+            Arc::get_mut(&mut inner_data)
+                .expect("freshly created column")
+                .push(Value::default(dict_type));
+        }
+
         Ok(LowCardinalityColumnData {
-            inner: <dyn ColumnData>::from_type::<ArcColumnWrapper>(
-                inner.clone(),
-                timezone,
-                capacity,
-            )?,
+            inner: inner_data,
             index: LowCardinalityIndex::UInt8(VectorColumnData::<u8>::with_capacity(capacity)),
             value_map: None,
+            nullable,
         })
     }
+}
+
+fn strip_nullable(type_name: &str) -> Option<&str> {
+    let inner = type_name.strip_prefix("Nullable(")?;
+    inner.strip_suffix(')')
+}
+
+/// Build a `LowCardinality(inner)` column from an arbitrary source column by
+/// deduplicating its values into a dictionary. Shared by the top-level cast and
+/// the recursive `Array`/`Map` casts.
+pub(crate) fn cast_to_low_cardinality(
+    src: &ArcColumnData,
+    inner: &SqlType,
+) -> Result<ArcColumnData> {
+    let tz = src.get_timezone().unwrap_or(Tz::Zulu);
+    let mut data = LowCardinalityColumnData::empty(inner, tz, src.len())?;
+    for i in 0..src.len() {
+        data.push(src.at(i).into());
+    }
+
+    if inner.is_datetime() {
+        if let Some(casted) = data.inner.cast_to(&data.inner, inner) {
+            data.inner = casted;
+        }
+    }
+
+    Ok(Arc::new(data))
 }
 
 fn read_inner<R: ReadEx>(
@@ -230,7 +291,6 @@ fn read_inner<R: ReadEx>(
         return Ok((inner, keys));
     }
 
-    read_prefix(reader)?;
     let flags: u64 = reader.read_scalar()?;
     let index_type = IndexType::from_flags(flags)?;
 
@@ -261,53 +321,23 @@ fn read_inner<R: ReadEx>(
     Ok((inner, keys))
 }
 
-fn read_prefix<R: ReadEx>(reader: &mut R) -> Result<()> {
-    let version: u64 = reader.read_scalar()?;
-    if version != LOW_CARDINALITY_VERSION {
-        return Err(Error::Driver(DriverError::Deserialize(Cow::from(
-            "Invalid low cardinality version",
-        ))));
-    }
-    Ok(())
-}
-
 impl LowCardinalityColumnData {
     fn get_value_map(&self) -> HashMap<Value, usize> {
         (0..self.index.len())
-            .map(|index| {
+            .filter_map(|index| {
                 let value_index = self.index.get_by_index(index);
+                // index 0 is the NULL placeholder for nullable dictionaries and
+                // must not shadow a genuine value during deduplication.
+                if self.nullable && value_index == 0 {
+                    return None;
+                }
                 let value: Value = self.inner.at(value_index).into();
-                (value, value_index)
+                Some((value, value_index))
             })
             .collect()
     }
-}
 
-impl ColumnData for LowCardinalityColumnData {
-    fn sql_type(&self) -> SqlType {
-        SqlType::LowCardinality(self.inner.sql_type().into())
-    }
-
-    fn save(&self, encoder: &mut Encoder, start: usize, end: usize) {
-        if start == end {
-            return;
-        }
-
-        encoder.write(LOW_CARDINALITY_VERSION);
-        encoder.write(self.index.get_flags());
-
-        encoder.write(self.inner.len() as u64);
-        self.inner.save(encoder, 0, self.inner.len());
-
-        encoder.write((end - start) as u64);
-        self.index.save(encoder, start, end)
-    }
-
-    fn len(&self) -> usize {
-        self.index.len()
-    }
-
-    fn push(&mut self, value: Value) {
+    fn push_value(&mut self, value: Value) {
         let value_map = loop {
             match self.value_map {
                 None => self.value_map = Some(self.get_value_map()),
@@ -327,10 +357,66 @@ impl ColumnData for LowCardinalityColumnData {
             Some(index) => self.index.push(*index),
         }
     }
+}
+
+impl ColumnData for LowCardinalityColumnData {
+    fn sql_type(&self) -> SqlType {
+        let inner = self.inner.sql_type();
+        let inner = if self.nullable {
+            SqlType::Nullable(inner.into())
+        } else {
+            inner
+        };
+        SqlType::LowCardinality(inner.into())
+    }
+
+    fn save(&self, encoder: &mut Encoder, start: usize, end: usize) {
+        if start == end {
+            return;
+        }
+
+        encoder.write(self.index.get_flags());
+
+        encoder.write(self.inner.len() as u64);
+        self.inner.save(encoder, 0, self.inner.len());
+
+        encoder.write((end - start) as u64);
+        self.index.save(encoder, start, end)
+    }
+
+    fn save_prefix(&self, encoder: &mut Encoder) {
+        encoder.write(LOW_CARDINALITY_VERSION);
+        self.inner.save_prefix(encoder);
+    }
+
+    fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    fn push(&mut self, value: Value) {
+        if self.nullable {
+            match value {
+                // NULL maps to the reserved dictionary slot 0.
+                Value::Nullable(Either::Left(_)) => self.index.push(0),
+                Value::Nullable(Either::Right(inner)) => self.push_value(*inner),
+                other => self.push_value(other),
+            }
+        } else {
+            self.push_value(value);
+        }
+    }
 
     fn at(&self, index: usize) -> ValueRef {
         let ix = self.index.get_by_index(index);
-        self.inner.at(ix)
+        if self.nullable {
+            if ix == 0 {
+                ValueRef::Nullable(Either::Left(self.inner.sql_type().into()))
+            } else {
+                ValueRef::Nullable(Either::Right(Box::new(self.inner.at(ix))))
+            }
+        } else {
+            self.inner.at(ix)
+        }
     }
 
     fn clone_instance(&self) -> BoxColumnData {
@@ -338,6 +424,7 @@ impl ColumnData for LowCardinalityColumnData {
             inner: self.inner.clone(),
             index: self.index.clone(),
             value_map: None,
+            nullable: self.nullable,
         })
     }
 

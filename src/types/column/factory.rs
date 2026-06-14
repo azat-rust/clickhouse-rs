@@ -54,6 +54,20 @@ macro_rules! match_str {
 }
 
 impl dyn ColumnData {
+    /// Read the per-column serialization-state prefix written ahead of the
+    /// column data (see [`ColumnData::save_prefix`]). 0-row columns carry no
+    /// prefix on the wire, so this is a no-op for them.
+    pub(crate) fn load_prefix<T: ReadEx>(
+        reader: &mut T,
+        type_name: &str,
+        size: usize,
+    ) -> Result<()> {
+        if size == 0 {
+            return Ok(());
+        }
+        load_prefix_rec(reader, type_name)
+    }
+
     #[allow(clippy::cognitive_complexity)]
     pub(crate) fn load_data<W: ColumnWrapper, T: ReadEx>(
         reader: &mut T,
@@ -251,6 +265,22 @@ fn parse_fixed_string(source: &str) -> Option<usize> {
     match inner_size.parse::<usize>() {
         Err(_) => None,
         Ok(value) => Some(value),
+    }
+}
+
+fn load_prefix_rec<T: ReadEx>(reader: &mut T, type_name: &str) -> Result<()> {
+    if let Some(inner) = parse_low_cardinality(type_name) {
+        LowCardinalityColumnData::load_prefix(reader)?;
+        load_prefix_rec(reader, inner)
+    } else if let Some(inner) = parse_array_type(type_name) {
+        load_prefix_rec(reader, inner)
+    } else if let Some((key, value)) = parse_map_type(type_name) {
+        load_prefix_rec(reader, key)?;
+        load_prefix_rec(reader, value)
+    } else if let Some(inner) = parse_nullable_type(type_name) {
+        load_prefix_rec(reader, inner)
+    } else {
+        Ok(())
     }
 }
 

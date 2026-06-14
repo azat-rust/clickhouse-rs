@@ -47,6 +47,10 @@ impl ColumnData for NullableColumnData {
         self.inner.save(encoder, start, end);
     }
 
+    fn save_prefix(&self, encoder: &mut Encoder) {
+        self.inner.save_prefix(encoder);
+    }
+
     fn len(&self) -> usize {
         assert_eq!(self.nulls.len(), self.inner.len());
         self.inner.len()

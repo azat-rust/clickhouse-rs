@@ -9,6 +9,7 @@ use crate::{
         column::{
             column_data::{ArcColumnData, BoxColumnData},
             list::List,
+            low_cardinality::cast_to_low_cardinality,
             ArcColumnWrapper, ColumnData,
         },
         SqlType, Value, ValueRef,
@@ -59,6 +60,10 @@ impl ColumnData for ArrayColumnData {
         self.inner.save(encoder, 0, offset as usize);
     }
 
+    fn save_prefix(&self, encoder: &mut Encoder) {
+        self.inner.save_prefix(encoder);
+    }
+
     fn len(&self) -> usize {
         self.offsets.len()
     }
@@ -83,7 +88,12 @@ impl ColumnData for ArrayColumnData {
     }
 
     fn at(&self, index: usize) -> ValueRef {
-        let sql_type = self.inner.sql_type();
+        // Elements come back already resolved through the dictionary, so the
+        // array reports the dictionary's value type rather than LowCardinality.
+        let sql_type = match self.inner.sql_type() {
+            SqlType::LowCardinality(inner) => inner.clone(),
+            other => other,
+        };
 
         let start = if index > 0 {
             self.offsets.at(index - 1) as usize
@@ -123,12 +133,16 @@ impl ColumnData for ArrayColumnData {
 
     fn cast_to(&self, _this: &ArcColumnData, target: &SqlType) -> Option<ArcColumnData> {
         if let SqlType::Array(inner_target) = target {
-            if let Some(inner) = self.inner.cast_to(&self.inner, inner_target) {
-                return Some(Arc::new(ArrayColumnData {
-                    inner,
-                    offsets: self.offsets.clone(),
-                }));
-            }
+            let inner = match inner_target {
+                SqlType::LowCardinality(lc_inner) => {
+                    cast_to_low_cardinality(&self.inner, lc_inner).ok()?
+                }
+                _ => self.inner.cast_to(&self.inner, inner_target)?,
+            };
+            return Some(Arc::new(ArrayColumnData {
+                inner,
+                offsets: self.offsets.clone(),
+            }));
         }
         None
     }

@@ -5,6 +5,7 @@ use crate::{
         column::{
             column_data::{ArcColumnData, BoxColumnData},
             list::List,
+            low_cardinality::cast_to_low_cardinality,
             ArcColumnWrapper, ColumnData, ColumnFrom, ColumnWrapper,
         },
         HasSqlType, Marshal, SqlType, StatBuffer, Unmarshal, Value, ValueRef,
@@ -65,6 +66,11 @@ impl ColumnData for MapColumnData {
         self.values.save(encoder, 0, offset as usize);
     }
 
+    fn save_prefix(&self, encoder: &mut Encoder) {
+        self.keys.save_prefix(encoder);
+        self.values.save_prefix(encoder);
+    }
+
     fn len(&self) -> usize {
         self.offsets.len()
     }
@@ -92,8 +98,14 @@ impl ColumnData for MapColumnData {
     }
 
     fn at(&self, index: usize) -> ValueRef {
-        let key_type = self.keys.sql_type();
-        let value_type = self.values.sql_type();
+        // Keys/values come back already resolved through their dictionaries, so
+        // the map reports the dictionary value types rather than LowCardinality.
+        let unwrap_lc = |t: SqlType| match t {
+            SqlType::LowCardinality(inner) => inner.clone(),
+            other => other,
+        };
+        let key_type = unwrap_lc(self.keys.sql_type());
+        let value_type = unwrap_lc(self.values.sql_type());
 
         let start = if index > 0 {
             self.offsets.at(index - 1) as usize
@@ -142,8 +154,16 @@ impl ColumnData for MapColumnData {
 
     fn cast_to(&self, _this: &ArcColumnData, target: &SqlType) -> Option<ArcColumnData> {
         if let SqlType::Map(key, value) = target {
-            let keys = self.keys.cast_to(&self.keys, key)?;
-            let values = self.values.cast_to(&self.values, value)?;
+            let keys = match key {
+                SqlType::LowCardinality(inner) => cast_to_low_cardinality(&self.keys, inner).ok()?,
+                _ => self.keys.cast_to(&self.keys, key)?,
+            };
+            let values = match value {
+                SqlType::LowCardinality(inner) => {
+                    cast_to_low_cardinality(&self.values, inner).ok()?
+                }
+                _ => self.values.cast_to(&self.values, value)?,
+            };
             Some(Arc::new(Self {
                 keys,
                 values,
