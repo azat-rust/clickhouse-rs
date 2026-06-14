@@ -212,10 +212,24 @@ pub struct NativeDateTimeIterator<'a> {
     _marker: marker::PhantomData<&'a ()>,
 }
 
+// Where the per-row NULL flag comes from. A plain `Nullable` column carries a
+// byte mask; `LowCardinality(Nullable(_))` instead reserves dictionary index 0
+// as the NULL sentinel, so nullness is read from the LowCardinality index.
+enum NullSource {
+    Mask {
+        ptr: *const u8,
+        end: *const u8,
+    },
+    LowCardinality {
+        index: *const LowCardinalityIndex,
+        pos: usize,
+        len: usize,
+    },
+}
+
 pub struct NullableIterator<'a, I> {
     inner: I,
-    ptr: *const u8,
-    end: *const u8,
+    nulls: NullSource,
     _marker: marker::PhantomData<&'a ()>,
 }
 
@@ -669,8 +683,10 @@ where
 {
     #[inline(always)]
     fn len(&self) -> usize {
-        let start = self.ptr;
-        self.end as usize - start as usize
+        match self.nulls {
+            NullSource::Mask { ptr, end } => end as usize - ptr as usize,
+            NullSource::LowCardinality { pos, len, .. } => len - pos,
+        }
     }
 }
 
@@ -681,17 +697,28 @@ where
     type Item = Option<I::Item>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.ptr == self.end {
-            return None;
-        }
+        let is_null = match &mut self.nulls {
+            NullSource::Mask { ptr, end } => {
+                if *ptr == *end {
+                    return None;
+                }
+                let flag = unsafe { **ptr };
+                *ptr = unsafe { ptr.offset(1) };
+                flag != 0
+            }
+            NullSource::LowCardinality { index, pos, len } => {
+                if *pos == *len {
+                    return None;
+                }
+                let value_index = unsafe { (**index).get_by_index(*pos) };
+                *pos += 1;
+                value_index == 0
+            }
+        };
 
+        // The value stream always advances (NULL rows still occupy a slot).
         let value = self.inner.next()?;
-        unsafe {
-            let flag = *self.ptr;
-            self.ptr = self.ptr.offset(1);
-
-            Some(if flag != 0 { None } else { Some(value) })
-        }
+        Some(if is_null { None } else { Some(value) })
     }
 
     #[inline]
@@ -900,7 +927,7 @@ impl<'a> Iterable<'a, Simple> for &[u8] {
             | SqlType::LowCardinality(&SqlType::FixedString(_)) => {
                 let mut internals = LowCardinalityInternals::default();
                 unsafe {
-                    column.get_internals(&mut internals, 1, 0)?;
+                    column.get_internals(&mut internals, 1, props)?;
                     size = (*internals.index).len();
                     StringInnerIterator::LowCardinality(internals.index, internals.accessor)
                 }
@@ -1206,34 +1233,52 @@ where
         column_type: SqlType,
         props: u32,
     ) -> Result<Self::Iter> {
-        let inner = if let SqlType::Nullable(inner_type) = column_type {
-            T::iter(column, inner_type.clone())?
-        } else {
-            return Err(Error::FromSql(FromSqlError::InvalidType {
-                src: column_type.to_string(),
-                dst: "Nullable".into(),
-            }));
-        };
+        if let SqlType::Nullable(inner_type) = column_type {
+            let inner = T::iter(column, inner_type.clone())?;
+            let (ptr, end) = unsafe {
+                let mut ptr: *const u8 = ptr::null();
+                let mut size: usize = 0;
+                column.get_internal(
+                    &[&mut ptr, &mut size as *mut usize as *mut *const u8],
+                    column_type.level(),
+                    props,
+                )?;
+                assert_ne!(ptr, ptr::null());
+                (ptr, ptr.add(size))
+            };
 
-        let (ptr, end) = unsafe {
-            let mut ptr: *const u8 = ptr::null();
-            let mut size: usize = 0;
-            column.get_internal(
-                &[&mut ptr, &mut size as *mut usize as *mut *const u8],
-                column_type.level(),
-                props,
-            )?;
-            assert_ne!(ptr, ptr::null());
-            let end = ptr.add(size);
-            (ptr, end)
-        };
+            return Ok(NullableIterator {
+                inner,
+                nulls: NullSource::Mask { ptr, end },
+                _marker: marker::PhantomData,
+            });
+        }
 
-        Ok(NullableIterator {
-            inner,
-            ptr,
-            end,
-            _marker: marker::PhantomData,
-        })
+        // LowCardinality(Nullable(T)): iterate the dictionary as non-nullable and
+        // take nullness from index 0 of the LowCardinality index.
+        if let SqlType::LowCardinality(&SqlType::Nullable(value_type)) = column_type {
+            let inner = T::iter_with_props(column, SqlType::LowCardinality(value_type), props)?;
+            let mut internals = LowCardinalityInternals::default();
+            let len = unsafe {
+                column.get_internals(&mut internals, 1, props)?;
+                (*internals.index).len()
+            };
+
+            return Ok(NullableIterator {
+                inner,
+                nulls: NullSource::LowCardinality {
+                    index: internals.index,
+                    pos: 0,
+                    len,
+                },
+                _marker: marker::PhantomData,
+            });
+        }
+
+        Err(Error::FromSql(FromSqlError::InvalidType {
+            src: column_type.to_string(),
+            dst: "Nullable".into(),
+        }))
     }
 }
 

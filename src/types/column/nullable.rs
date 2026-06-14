@@ -109,6 +109,10 @@ impl ColumnData for NullableColumnData {
         }
     }
 
+    unsafe fn get_internals(&self, data: *mut (), level: u8, props: u32) -> Result<()> {
+        self.inner.get_internals(data, level, props)
+    }
+
     fn cast_to(&self, _this: &ArcColumnData, target: &SqlType) -> Option<ArcColumnData> {
         if let SqlType::Nullable(inner_target) = target {
             if let Some(inner) = self.inner.cast_to(&self.inner, inner_target) {

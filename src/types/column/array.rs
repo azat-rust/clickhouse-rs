@@ -131,6 +131,12 @@ impl ColumnData for ArrayColumnData {
         }
     }
 
+    unsafe fn get_internals(&self, data: *mut (), level: u8, props: u32) -> Result<()> {
+        // Offsets travel through get_internal; the inner LowCardinality/DateTime
+        // node performs its own level check, so forward verbatim.
+        self.inner.get_internals(data, level, props)
+    }
+
     fn cast_to(&self, _this: &ArcColumnData, target: &SqlType) -> Option<ArcColumnData> {
         if let SqlType::Array(inner_target) = target {
             let inner = match inner_target {

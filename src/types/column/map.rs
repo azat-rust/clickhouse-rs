@@ -152,6 +152,21 @@ impl ColumnData for MapColumnData {
         }
     }
 
+    unsafe fn get_internals(&self, data: *mut (), level: u8, props: u32) -> Result<()> {
+        // Offsets travel through get_internal; here we only route to the key or
+        // value subtree (per the same props convention) for its LowCardinality /
+        // DateTime internals.
+        if props == 1 {
+            self.keys.get_internals(data, level, 0)
+        } else {
+            let new_props = match props {
+                0 => 0,
+                _ => 1 | (((props >> 1) - 1) << 1),
+            };
+            self.values.get_internals(data, level, new_props)
+        }
+    }
+
     fn cast_to(&self, _this: &ArcColumnData, target: &SqlType) -> Option<ArcColumnData> {
         if let SqlType::Map(key, value) = target {
             let keys = match key {

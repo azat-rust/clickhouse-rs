@@ -2743,3 +2743,67 @@ async fn test_lc_server_read_combos() -> Result<(), Error> {
     assert_eq!(m.get("x"), Some(&7_u32));
     Ok(())
 }
+
+#[tokio::test]
+async fn test_iter_lc_nested_and_nullable() -> Result<(), Error> {
+    let options = Options::from_str(&database_url())?
+        .with_setting("allow_suspicious_low_cardinality_types", 1, true);
+    let pool = Pool::new(options);
+    let mut c = pool.get_handle().await?;
+
+    let block = c
+        .query(
+            "SELECT \
+               arrayJoin([['a','b','a'], ['c']]) :: Array(LowCardinality(String)) AS arr, \
+               map('k1', toUInt32(1), 'k2', toUInt32(2)) :: Map(LowCardinality(String), UInt32) AS m, \
+               'x' :: LowCardinality(Nullable(String)) AS n \
+             ORDER BY length(arr) DESC",
+        )
+        .fetch_all()
+        .await?;
+
+    let arr: Vec<Vec<&[u8]>> = block.get_column("arr")?.iter::<Vec<&[u8]>>()?.collect();
+    assert_eq!(
+        arr,
+        vec![vec![b"a".as_ref(), b"b", b"a"], vec![b"c".as_ref()]]
+    );
+
+    let maps: Vec<HashMap<&[u8], &u32>> =
+        block.get_column("m")?.iter::<HashMap<&[u8], u32>>()?.collect();
+    assert_eq!(maps[0].get(b"k1".as_ref()), Some(&&1_u32));
+    assert_eq!(maps[0].get(b"k2".as_ref()), Some(&&2_u32));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_iter_lc_nullable_with_nulls() -> Result<(), Error> {
+    let ddl = r"
+        CREATE TABLE IF NOT EXISTS clickhouse_iter_lc_null (
+            id   UInt64,
+            text LowCardinality(Nullable(String))
+        ) ENGINE = Memory
+    ";
+    let block = Block::new()
+        .column("id", vec![1_u64, 2, 3, 4])
+        .column("text", vec![Some("A"), None, Some("A"), Some("B")]);
+
+    let options = Options::from_str(&database_url())?
+        .with_setting("allow_suspicious_low_cardinality_types", 1, true);
+    let pool = Pool::new(options);
+    let mut c = pool.get_handle().await?;
+    c.execute("DROP TABLE IF EXISTS clickhouse_iter_lc_null").await?;
+    c.execute(ddl).await?;
+    c.insert("clickhouse_iter_lc_null", block).await?;
+
+    let block = c
+        .query("SELECT text FROM clickhouse_iter_lc_null ORDER BY id")
+        .fetch_all()
+        .await?;
+    let got: Vec<Option<&[u8]>> = block.get_column("text")?.iter::<Option<&[u8]>>()?.collect();
+    assert_eq!(
+        got,
+        vec![Some(b"A".as_ref()), None, Some(b"A".as_ref()), Some(b"B".as_ref())]
+    );
+    Ok(())
+}
