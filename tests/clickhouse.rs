@@ -11,7 +11,7 @@ use chrono_tz::Tz;
 use clickhouse_rs::{
     errors::Error,
     row,
-    types::{Complex, Decimal, Enum16, Enum8, FromSql, SqlType, Value},
+    types::{Complex, Decimal, Enum16, Enum8, FromSql, Query, SqlType, Value},
     Block, Options, Pool,
 };
 use futures_util::{
@@ -839,6 +839,37 @@ async fn test_select_unknown_settings() {
     let pool = Pool::new(options);
     let mut c = pool.get_handle().await.unwrap();
     c.query("SELECT 1 WHERE 1 <> 1").fetch_all().await.unwrap();
+}
+
+#[cfg(feature = "tokio_io")]
+#[tokio::test]
+#[should_panic]
+async fn test_query_unknown_settings() {
+    let pool = Pool::new(database_url());
+    let mut c = pool.get_handle().await.unwrap();
+    let query = Query::new("SELECT 1 WHERE 1 <> 1").with_setting("foo", 1, /* is_important= */ true);
+    c.query(query).fetch_all().await.unwrap();
+}
+
+#[cfg(feature = "tokio_io")]
+#[tokio::test]
+async fn test_query_settings_override() -> Result<(), Error> {
+    // Connection-level limit that would make any multi-row result fail.
+    let options = Options::from_str(&database_url())?
+        .with_setting("result_overflow_mode", "throw", true)
+        .with_setting("max_result_rows", 1, true);
+    let pool = Pool::new(options);
+    let sql = "SELECT number FROM system.numbers LIMIT 10";
+
+    // Per-query setting overrides the connection-level limit.
+    let query = Query::new(sql).with_setting("max_result_rows", 10, true);
+    let r = pool.get_handle().await?.query(query).fetch_all().await?;
+    assert_eq!(r.row_count(), 10);
+
+    // Without the override the connection-level limit is still in effect.
+    pool.get_handle().await?.query(sql).fetch_all().await.unwrap_err();
+
+    Ok(())
 }
 
 #[cfg(feature = "tokio_io")]
