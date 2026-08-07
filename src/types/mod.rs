@@ -16,7 +16,7 @@ pub use self::{
     from_sql::{FromSql, FromSqlResult},
     options::Options,
     options::{SettingType, SettingValue},
-    query::Query,
+    query::{ProgressCallback, Query},
     query_result::QueryResult,
     value::Value,
     value_ref::ValueRef,
@@ -53,13 +53,27 @@ mod decimal;
 mod enums;
 mod options;
 
+/// Values are cumulative for the whole query: the server sends deltas, the
+/// driver accumulates them before invoking the progress callback (see
+/// [`Query::with_progress`]). `total_rows` is the server's running estimate
+/// and may grow while the query executes.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
-pub(crate) struct Progress {
+pub struct Progress {
     pub rows: u64,
     pub bytes: u64,
     pub total_rows: u64,
     pub written_rows: u64,
     pub written_bytes: u64,
+}
+
+impl std::ops::AddAssign for Progress {
+    fn add_assign(&mut self, other: Self) {
+        self.rows += other.rows;
+        self.bytes += other.bytes;
+        self.total_rows += other.total_rows;
+        self.written_rows += other.written_rows;
+        self.written_bytes += other.written_bytes;
+    }
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq)]
