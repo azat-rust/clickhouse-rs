@@ -252,7 +252,18 @@ impl ClickhouseTransport {
         loop {
             if self.wr_is_empty() {
                 match self.cmds.pop_front() {
-                    None => return Poll::Ready(Ok(())),
+                    None => {
+                        // TLS streams can report the plaintext as written while
+                        // ciphertext is still buffered in the session (rustls
+                        // buffers up to 64KiB); nothing polls the write side
+                        // after this point, so an unflushed tail would never
+                        // reach the server.
+                        return match Pin::new(&mut self.inner).poll_flush(cx) {
+                            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+                            Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
+                            Poll::Pending => Poll::Pending,
+                        };
+                    }
                     Some(cmd) => {
                         let bytes = cmd.get_packed_command()?;
                         self.wr = Cursor::new(bytes)
