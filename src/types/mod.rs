@@ -66,6 +66,11 @@ pub struct Progress {
     pub written_bytes: u64,
 }
 
+/// Invoked as outgoing command buffers are written to the socket, with
+/// (bytes_sent, bytes_total) of the current buffer (see
+/// [`crate::ClientHandle::set_send_progress`]).
+pub type SendProgressCallback = std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>;
+
 impl std::ops::AddAssign for Progress {
     fn add_assign(&mut self, other: Self) {
         self.rows += other.rows;
