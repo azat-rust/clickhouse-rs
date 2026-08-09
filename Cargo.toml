@@ -25,8 +25,8 @@ tokio_io = ["tokio"]
 [dependencies]
 byteorder = "^1.4"
 chrono-tz = "^0.8"
-crossbeam = "^0.8"
-thiserror = "^1.0"
+crossbeam-queue = "^0.3"
+thiserror = "^2.0"
 futures-core = "^0.3"
 futures-sink = "^0.3"
 hostname = "^0.3"
