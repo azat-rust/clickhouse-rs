@@ -381,7 +381,7 @@ impl ClientHandle {
     }
 
     /// Executes Clickhouse `query` on Conn.
-    pub fn query<Q>(&mut self, sql: Q) -> QueryResult
+    pub fn query<Q>(&'_ mut self, sql: Q) -> QueryResult<'_>
     where
         Query: From<Q>,
     {

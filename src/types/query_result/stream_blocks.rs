@@ -59,11 +59,11 @@ impl<'a> Drop for BlockStream<'a> {
 
 impl<'a> BlockStream<'a> {
     pub(crate) fn new(
-        client: &mut ClientHandle,
+        client: &'_ mut ClientHandle,
         inner: PacketStream,
         skip_first_block: bool,
         progress_callback: Option<ProgressCallback>,
-    ) -> BlockStream {
+    ) -> BlockStream<'_> {
         BlockStream {
             client,
             inner,
