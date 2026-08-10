@@ -11,7 +11,7 @@ use chrono_tz::Tz;
 use clickhouse_rs::{
     errors::Error,
     row,
-    types::{Complex, Decimal, Enum16, Enum8, FromSql, SqlType, Value},
+    types::{Complex, Decimal, Enum16, Enum8, FromSql, Query, SqlType, Value},
     Block, Options, Pool,
 };
 use futures_util::{
@@ -31,14 +31,14 @@ use std::{
 use uuid::Uuid;
 use Tz::{Asia__Istanbul as IST, UTC};
 
-#[cfg(not(feature = "tls"))]
+#[cfg(not(feature = "_tls"))]
 fn database_url() -> String {
     env::var("DATABASE_URL").unwrap_or_else(|_| {
         "tcp://localhost:9000?compression=lz4&ping_timeout=2s&retry_timeout=3s".into()
     })
 }
 
-#[cfg(feature = "tls")]
+#[cfg(feature = "_tls")]
 fn database_url() -> String {
     env::var("DATABASE_URL").unwrap_or_else(|_| {
         "tcp://localhost:9440?compression=lz4&ping_timeout=2s&retry_timeout=3s&secure=true&skip_verify=true".into()
@@ -65,7 +65,9 @@ async fn test_ping() -> Result<(), Error> {
 #[cfg(feature = "tokio_io")]
 #[tokio::test]
 async fn test_connection_by_wrong_address() -> Result<(), Error> {
-    let pool = Pool::new("tcp://badaddr:9000");
+    // Broadcast address: connect() fails immediately, and no DNS is involved
+    // (resolver behavior is environment-dependent and can be slow).
+    let pool = Pool::new("tcp://255.255.255.255:9000?connection_timeout=500ms&retry_timeout=500ms&send_retries=1");
     let ret: Result<(), Error> = async move {
         let mut c = pool.get_handle().await?;
         c.ping().await?;
@@ -837,6 +839,37 @@ async fn test_select_unknown_settings() {
     let pool = Pool::new(options);
     let mut c = pool.get_handle().await.unwrap();
     c.query("SELECT 1 WHERE 1 <> 1").fetch_all().await.unwrap();
+}
+
+#[cfg(feature = "tokio_io")]
+#[tokio::test]
+#[should_panic]
+async fn test_query_unknown_settings() {
+    let pool = Pool::new(database_url());
+    let mut c = pool.get_handle().await.unwrap();
+    let query = Query::new("SELECT 1 WHERE 1 <> 1").with_setting("foo", 1, /* is_important= */ true);
+    c.query(query).fetch_all().await.unwrap();
+}
+
+#[cfg(feature = "tokio_io")]
+#[tokio::test]
+async fn test_query_settings_override() -> Result<(), Error> {
+    // Connection-level limit that would make any multi-row result fail.
+    let options = Options::from_str(&database_url())?
+        .with_setting("result_overflow_mode", "throw", true)
+        .with_setting("max_result_rows", 1, true);
+    let pool = Pool::new(options);
+    let sql = "SELECT number FROM system.numbers LIMIT 10";
+
+    // Per-query setting overrides the connection-level limit.
+    let query = Query::new(sql).with_setting("max_result_rows", 10, true);
+    let r = pool.get_handle().await?.query(query).fetch_all().await?;
+    assert_eq!(r.row_count(), 10);
+
+    // Without the override the connection-level limit is still in effect.
+    pool.get_handle().await?.query(sql).fetch_all().await.unwrap_err();
+
+    Ok(())
 }
 
 #[cfg(feature = "tokio_io")]
@@ -2572,5 +2605,26 @@ async fn test_insert_big_block() -> Result<(), Error> {
         .await?;
 
     assert_eq!(format!("{:?}", expected.as_ref()), format!("{:?}", &actual));
+    Ok(())
+}
+
+#[cfg(feature = "tokio_io")]
+#[tokio::test]
+async fn test_client_name() -> Result<(), Error> {
+    let uuid = Uuid::new_v4().to_string();
+    let client_name = format!("clickhouse-rs-tests-{}", uuid);
+    let log_comment = format!("tests-{}", uuid);
+    let options = Options::from_str(&format!("{}&client_name={}", database_url(), client_name))?
+        .with_setting("log_comment", &*log_comment, true);
+    let pool = Pool::new(options);
+    let mut c = pool.get_handle().await?;
+
+    c.execute("SELECT 1").await?;
+    c.execute("SYSTEM FLUSH LOGS").await?;
+    let rows = c
+        .query(format!("SELECT client_name FROM system.query_log WHERE Settings['log_comment'] = '{log_comment}' AND query = 'SELECT 1' LIMIT 1"))
+        .fetch_all()
+        .await?;
+    assert_eq!(client_name, rows.get::<String, _>(0, "client_name")?);
     Ok(())
 }

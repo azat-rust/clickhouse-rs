@@ -6,12 +6,15 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+#[cfg(feature = "_tls")]
+use std::fs;
 
 use crate::errors::{Error, Result, UrlError};
-#[cfg(feature = "tls")]
-use native_tls;
 use percent_encoding::percent_decode;
 use url::Url;
+
+#[cfg(feature = "tls-rustls")]
+use rustls::pki_types::pem::PemObject;
 
 const DEFAULT_MIN_CONNS: usize = 10;
 
@@ -40,7 +43,7 @@ impl fmt::Debug for OptionsSource {
 }
 
 impl OptionsSource {
-    pub(crate) fn get(&self) -> Result<Cow<Options>> {
+    pub(crate) fn get(&'_ self) -> Result<Cow<'_, Options>> {
         let mut state = self.state.lock().unwrap();
         loop {
             *state = match &*state {
@@ -93,12 +96,11 @@ impl IntoOptions for String {
     }
 }
 
-/// An X509 certificate.
-#[cfg(feature = "tls")]
+/// An X509 certificate for native-tls.
+#[cfg(feature = "tls-native-tls")]
 #[derive(Clone)]
 pub struct Certificate(Arc<native_tls::Certificate>);
-
-#[cfg(feature = "tls")]
+#[cfg(feature = "tls-native-tls")]
 impl Certificate {
     /// Parses a DER-formatted X509 certificate.
     pub fn from_der(der: &[u8]) -> Result<Certificate> {
@@ -110,33 +112,118 @@ impl Certificate {
     }
 
     /// Parses a PEM-formatted X509 certificate.
-    pub fn from_pem(der: &[u8]) -> Result<Certificate> {
-        let inner = match native_tls::Certificate::from_pem(der) {
+    pub fn from_pem(pem: &[u8]) -> Result<Certificate> {
+        let inner = match native_tls::Certificate::from_pem(pem) {
             Ok(certificate) => certificate,
             Err(err) => return Err(Error::Other(err.to_string().into())),
         };
         Ok(Certificate(Arc::new(inner)))
     }
 }
+#[cfg(feature = "tls-native-tls")]
+impl From<Certificate> for native_tls::Certificate {
+    fn from(value: Certificate) -> Self {
+        value.0.as_ref().clone()
+    }
+}
 
-#[cfg(feature = "tls")]
+/// An X509 certificate for rustls.
+#[cfg(feature = "tls-rustls")]
+#[derive(Clone)]
+pub struct Certificate(Arc<Vec<rustls::pki_types::CertificateDer<'static>>>);
+#[cfg(feature = "tls-rustls")]
+impl Certificate {
+    /// Parses a DER-formatted X509 certificate.
+    pub fn from_der(der: &[u8]) -> Result<Certificate> {
+        let der = der.to_vec();
+        let inner = match rustls::pki_types::CertificateDer::try_from(der) {
+            Ok(certificate) => certificate,
+            Err(err) => return Err(Error::Other(err.to_string().into())),
+        };
+        Ok(Certificate(Arc::new(vec![inner])))
+    }
+
+    /// Parses a PEM-formatted X509 certificate.
+    pub fn from_pem(pem: &[u8]) -> Result<Certificate> {
+        let certs = rustls_pemfile::certs(&mut pem.as_ref())
+            .map(|result| result.unwrap())
+            .collect();
+        Ok(Certificate(Arc::new(certs)))
+    }
+}
+#[cfg(feature = "tls-rustls")]
+impl From<Certificate> for Vec<rustls::pki_types::CertificateDer<'static>> {
+    fn from(value: Certificate) -> Self {
+        value.0.as_ref().clone()
+    }
+}
+
+#[cfg(feature = "_tls")]
 impl fmt::Debug for Certificate {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "[Certificate]")
     }
 }
-
-#[cfg(feature = "tls")]
+#[cfg(feature = "_tls")]
 impl PartialEq for Certificate {
     fn eq(&self, _other: &Self) -> bool {
         true
     }
 }
 
-#[cfg(feature = "tls")]
-impl From<Certificate> for native_tls::Certificate {
-    fn from(value: Certificate) -> Self {
-        value.0.as_ref().clone()
+#[cfg(feature = "_tls")]
+pub fn load_certificate(file: &str) -> Result<Certificate> {
+    let data = fs::read(file)?;
+    if file.ends_with(".der") || file.ends_with(".cer") {
+        Certificate::from_der(&data)
+    } else {
+        Certificate::from_pem(&data)
+    }
+}
+
+#[cfg(feature = "_tls")]
+#[derive(Clone)]
+pub enum ClientTlsIdentity {
+    #[cfg(feature = "tls-rustls")]
+    Pem {
+        key: Arc<rustls::pki_types::PrivateKeyDer<'static>>,
+        certs: Certificate,
+    },
+    #[cfg(feature = "tls-native-tls")]
+    Pkcs(native_tls::Identity),
+}
+
+#[cfg(feature = "_tls")]
+impl ClientTlsIdentity {
+    #[cfg(feature = "tls-rustls")]
+    pub fn load(cert_path: &str, key_path: &str) -> Result<Self> {
+        let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(fs::read(key_path)?.as_ref())
+            .map_err(|e| format!("Cannot read private key from {}: {}", key_path, e))?;
+        let key = Arc::new(key);
+        let certs = load_certificate(cert_path)?;
+        return Ok(Self::Pem{ key, certs });
+    }
+
+    #[cfg(feature = "tls-native-tls")]
+    pub fn load(cert_path: &str, key_path: &str) -> Result<Self> {
+        let identity = native_tls::Identity::from_pkcs8(
+            fs::read(cert_path)?.as_ref(),
+            fs::read(key_path)?.as_ref(),
+        ).map_err(|e| format!("Cannot load identity from {} and {}: {}", cert_path, key_path, e))?;
+        return Ok(Self::Pkcs(identity));
+    }
+}
+
+#[cfg(feature = "_tls")]
+impl fmt::Debug for ClientTlsIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "[Client Certificate]")
+    }
+}
+#[cfg(feature = "_tls")]
+impl PartialEq for ClientTlsIdentity {
+    fn eq(&self, _other: &Self) -> bool {
+        true
     }
 }
 
@@ -254,27 +341,35 @@ pub struct Options {
     pub(crate) execute_timeout: Option<Duration>,
 
     /// Enable TLS encryption (defaults to `false`)
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "_tls")]
     pub(crate) secure: bool,
 
     /// Skip certificate verification (default is `false`).
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "_tls")]
     pub(crate) skip_verify: bool,
 
-    /// An X509 certificate.
-    #[cfg(feature = "tls")]
-    pub(crate) certificate: Option<Certificate>,
+    /// CA certificate.
+    #[cfg(feature = "_tls")]
+    pub(crate) ca_certificate: Option<Certificate>,
+
+    /// Authorization with certificate (mTLS).
+    #[cfg(feature = "_tls")]
+    pub(crate) client_tls_identity: Option<ClientTlsIdentity>,
 
     /// Query settings
     pub(crate) settings: HashMap<String, SettingValue>,
 
     /// Comma separated list of single address host for load-balancing.
     pub(crate) alt_hosts: Vec<Url>,
+
+    /// Client name (defaults to `Rust SQLDriver`).
+    pub(crate) client_name: String
 }
 
 impl fmt::Debug for Options {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Options")
+        let mut debug = f.debug_struct("Options");
+        let res = debug
             .field("addr", &self.addr)
             .field("database", &self.database)
             .field("compression", &self.compression)
@@ -289,7 +384,15 @@ impl fmt::Debug for Options {
             .field("connection_timeout", &self.connection_timeout)
             .field("settings", &self.settings)
             .field("alt_hosts", &self.alt_hosts)
-            .finish()
+            .field("client_name", &self.client_name);
+
+        #[cfg(feature = "_tls")]
+        res
+            .field("secure", &self.secure)
+            .field("ca_certificate", &self.ca_certificate)
+            .field("client_tls_identity", &self.client_tls_identity);
+
+        res.finish()
     }
 }
 
@@ -313,14 +416,17 @@ impl Default for Options {
             query_timeout: Duration::from_secs(180),
             insert_timeout: Some(Duration::from_secs(180)),
             execute_timeout: Some(Duration::from_secs(180)),
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "_tls")]
             secure: false,
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "_tls")]
             skip_verify: false,
-            #[cfg(feature = "tls")]
-            certificate: None,
+            #[cfg(feature = "_tls")]
+            ca_certificate: None,
+            #[cfg(feature = "_tls")]
+            client_tls_identity: None,
             settings: HashMap::new(),
             alt_hosts: Vec::new(),
+            client_name: "Rust SQLDriver".into(),
         }
     }
 }
@@ -455,22 +561,28 @@ impl Options {
         => execute_timeout: Option<Duration>
     }
 
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "_tls")]
     property! {
         /// Establish secure connection (default is `false`).
         => secure: bool
     }
 
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "_tls")]
     property! {
         /// Skip certificate verification (default is `false`).
         => skip_verify: bool
     }
 
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "_tls")]
     property! {
-        /// An X509 certificate.
-        => certificate: Option<Certificate>
+        /// CA certificate.
+        => ca_certificate: Option<Certificate>
+    }
+
+    #[cfg(feature = "_tls")]
+    property! {
+        /// Authorization with certificate (mTLS).
+        => client_tls_identity: Option<ClientTlsIdentity>
     }
 
     property! {
@@ -481,6 +593,11 @@ impl Options {
     property! {
         /// Comma separated list of single address host for load-balancing.
         => alt_hosts: Vec<Url>
+    }
+
+    property! {
+        /// Client name (defaults to `Rust SQLDriver`).
+        => client_name: &str
     }
 }
 
@@ -537,6 +654,11 @@ fn set_params<'a, I>(options: &mut Options, iter: I) -> std::result::Result<(), 
 where
     I: Iterator<Item = (Cow<'a, str>, Cow<'a, str>)>,
 {
+    #[cfg(feature = "_tls")]
+    let mut client_certificate = None;
+    #[cfg(feature = "_tls")]
+    let mut client_private_key = None;
+
     for (key, value) in iter {
         match key.as_ref() {
             "pool_min" => options.pool_min = parse_param(key, value, usize::from_str)?,
@@ -560,11 +682,18 @@ where
                 options.execute_timeout = parse_param(key, value, parse_opt_duration)?
             }
             "compression" => options.compression = parse_param(key, value, parse_compression)?,
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "_tls")]
             "secure" => options.secure = parse_param(key, value, bool::from_str)?,
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "_tls")]
             "skip_verify" => options.skip_verify = parse_param(key, value, bool::from_str)?,
+            #[cfg(feature = "_tls")]
+            "ca_certificate" => options.ca_certificate = Some(parse_param(key, value, load_certificate)?),
+            #[cfg(feature = "_tls")]
+            "client_certificate" => client_certificate = Some(value),
+            #[cfg(feature = "_tls")]
+            "client_private_key" => client_private_key = Some(value),
             "alt_hosts" => options.alt_hosts = parse_param(key, value, parse_hosts)?,
+            "client_name" => options.client_name = parse_param(key, value, String::from_str)?,
             _ => {
                 let value = SettingType::String(value.to_string());
                 options.settings.insert(
@@ -576,6 +705,17 @@ where
                 );
             }
         };
+    }
+
+    #[cfg(feature = "_tls")]
+    match (client_certificate, client_private_key) {
+        (Some(cert), Some(key)) => {
+            options.client_tls_identity = Some(ClientTlsIdentity::load(&cert, &key).map_err(|_| UrlError::Invalid)?);
+        }
+        (None, None) => {}
+        _ => {
+            return Err(UrlError::Invalid);
+        },
     }
 
     Ok(())
@@ -701,7 +841,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "_tls")]
     fn test_parse_secure_options() {
         let url = "tcp://username:password@host1:9001/database?ping_timeout=42ms&keepalive=99s&compression=lz4&connection_timeout=10s&secure=true&skip_verify=true";
         assert_eq!(

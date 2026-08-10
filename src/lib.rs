@@ -66,7 +66,8 @@
 //!
 //! - `tokio_io` *(enabled by default)* — I/O based on [Tokio](https://tokio.rs/).
 //! - `async_std` — I/O based on [async-std](https://async.rs/) (doesn't work together with `tokio_io`).
-//! - `tls` — TLS support (allowed only with `tokio_io`).
+//! - `tls-native-tls` — TLS support with native-tls (allowed only with `tokio_io`).
+//! - `tls-rustls` — TLS support with rustls (allowed only with `tokio_io`).
 //!
 //! ### Example
 //!
@@ -108,6 +109,9 @@
 
 #![recursion_limit = "1024"]
 
+#[cfg(all(feature = "tls-native-tls", feature = "tls-rustls"))]
+compile_error!("tls-native-tls and tls-rustls are mutually exclusive and cannot be enabled together");
+
 use std::{fmt, future::Future, time::Duration};
 
 use futures_util::{
@@ -124,7 +128,8 @@ use crate::{
     types::{
         block::{ChunkIterator, INSERT_BLOCK_SIZE},
         query_result::stream_blocks::BlockStream,
-        Cmd, Context, IntoOptions, OptionsSource, Packet, Query, QueryResult, SqlType,
+        Cmd, Context, IntoOptions, OptionsSource, Packet, Query, QueryResult, SendProgressCallback,
+        SqlType,
     },
 };
 pub use crate::{
@@ -319,12 +324,17 @@ impl ClientHandle {
                 }
                 Ok(Packet::Exception(e)) => return Err(Error::Server(e)),
                 Err(e) => return Err(Error::Io(e)),
-                _ => return Err(Error::Driver(DriverError::UnexpectedPacket)),
+                Ok(other) => {
+                    return Err(Error::Driver(DriverError::UnexpectedPacket {
+                        packet: other.variant_name(),
+                        context: "hello",
+                    }))
+                }
             }
         }
 
         self.inner = h;
-        self.context.server_info = info.unwrap();
+        self.context.server_info = info.ok_or(Error::Other("Missing Hello/Exception packet".into()))?;
         Ok(())
     }
 
@@ -348,7 +358,12 @@ impl ClientHandle {
                         }
                         Ok(Packet::Exception(e)) => return Err(Error::Server(e)),
                         Err(e) => return Err(Error::Io(e)),
-                        _ => return Err(Error::Driver(DriverError::UnexpectedPacket)),
+                        Ok(other) => {
+                            return Err(Error::Driver(DriverError::UnexpectedPacket {
+                                packet: other.variant_name(),
+                                context: "ping",
+                            }))
+                        }
                     }
                 }
 
@@ -366,7 +381,7 @@ impl ClientHandle {
     }
 
     /// Executes Clickhouse `query` on Conn.
-    pub fn query<Q>(&mut self, sql: Q) -> QueryResult
+    pub fn query<Q>(&'_ mut self, sql: Q) -> QueryResult<'_>
     where
         Query: From<Q>,
     {
@@ -418,7 +433,12 @@ impl ClientHandle {
                                 | Ok(Packet::Progress(_)) => (),
                                 Ok(Packet::Exception(e)) => return Err(Error::Server(e)),
                                 Err(e) => return Err(Error::Io(e)),
-                                _ => return Err(Error::Driver(DriverError::UnexpectedPacket)),
+                                Ok(other) => {
+                                    return Err(Error::Driver(DriverError::UnexpectedPacket {
+                                        packet: other.variant_name(),
+                                        context: "execute",
+                                    }))
+                                }
                             }
                         }
 
@@ -430,6 +450,18 @@ impl ClientHandle {
             timeout,
         )
         .await
+    }
+
+    /// Sets a callback invoked as outgoing command buffers are written to the
+    /// socket, with (bytes_sent, bytes_total) of the current buffer. It fires
+    /// for every command on this connection; for an INSERT the dominant buffer
+    /// is the serialized data block, so this can drive an upload progress bar.
+    /// Bytes are counted when the socket accepts them, so the numbers lead
+    /// actual delivery by the kernel/TLS buffering.
+    pub fn set_send_progress(&mut self, callback: Option<SendProgressCallback>) {
+        if let Some(inner) = self.inner.as_mut() {
+            inner.send_progress = callback;
+        }
     }
 
     /// Convenience method to insert block of data.
