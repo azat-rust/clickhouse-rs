@@ -25,7 +25,7 @@ impl<'i, T: Read> Parser<'i, T> {
     /// than one value can be behind the reader in which case the parser can
     /// be invoked multiple times.  In other words: the stream does not have
     /// to be terminated.
-    pub(crate) fn new(reader: T, info: &'i TransportInfo) -> Parser<T> {
+    pub(crate) fn new(reader: T, info: &'i TransportInfo) -> Parser<'i, T> {
         Self { reader, info }
     }
 
@@ -51,7 +51,10 @@ impl<'i, T: Read> Parser<'i, T> {
 
     fn parse_block(&mut self) -> Result<Packet<()>> {
         match self.info.timezone {
-            None => Err(Error::Driver(DriverError::UnexpectedPacket)),
+            None => Err(Error::Driver(DriverError::UnexpectedPacket {
+                packet: "Block",
+                context: "parse_block (timezone not yet received)",
+            })),
             Some(tz) => {
                 self.reader.skip_string()?;
                 let block = Block::load(&mut self.reader, tz, self.info.compress)?;
